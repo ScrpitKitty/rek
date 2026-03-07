@@ -28,6 +28,8 @@ import logging.handlers
 import argparse
 import uuid
 import functools
+import time
+from datetime import datetime, timezone
 from typing import Any
 
 # Suppress all warnings so they don't corrupt StdIO JSON stream
@@ -69,6 +71,38 @@ class _StderrToLog:
 
     def flush(self) -> None:
         pass
+
+# ---------------------------------------------------------------------------
+# Structured output helpers
+# ---------------------------------------------------------------------------
+
+def _ts() -> str:
+    """ISO 8601 UTC timestamp."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _ok(tool: str, start: float, **fields) -> str:
+    """Serialize a successful structured tool result to a JSON string."""
+    return json.dumps({
+        "tool": tool,
+        "timestamp": _ts(),
+        "execution_time_seconds": round(time.time() - start, 2),
+        "exit_status": "success",
+        **fields,
+    }, indent=2)
+
+
+def _err(tool: str, start: float, message: str, **fields) -> str:
+    """Serialize a failure structured tool result to a JSON string."""
+    return json.dumps({
+        "tool": tool,
+        "timestamp": _ts(),
+        "execution_time_seconds": round(time.time() - start, 2),
+        "exit_status": "failure",
+        "error": message,
+        **fields,
+    }, indent=2)
+
 
 # ---------------------------------------------------------------------------
 # Tool definitions (MCP schema)
@@ -358,6 +392,96 @@ TOOLS = [
             },
             "required": ["domain"]
         }
+    },
+    {
+        "name": "run_port_scan",
+        "description": (
+            "Scan one or more hosts for open ports using naabu. "
+            "Returns a structured list of open host:port pairs. "
+            "Requires naabu installed (via playbook/install-script.sh). "
+            "Output feeds naturally into run_endpoint_scan or check_http_status."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "host": {
+                    "type": "string",
+                    "description": "Single target host, IP, domain, or CIDR range"
+                },
+                "hosts_file": {
+                    "type": "string",
+                    "description": "Path to file with one host per line (alternative to host)"
+                },
+                "ports": {
+                    "type": "string",
+                    "description": "Comma-separated ports or ranges to scan (default: common web ports)",
+                    "default": "80,443,3000,5000,8000,8001,8080,8081,8088,8443,8888,9000"
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "description": "Max concurrent probes (default: 100)",
+                    "default": 100
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Probe timeout in seconds (default: 10)",
+                    "default": 10
+                },
+                "output_file": {
+                    "type": "string",
+                    "description": "Output file path for raw results (default: port_results.txt)",
+                    "default": "port_results.txt"
+                }
+            }
+        }
+    },
+    {
+        "name": "run_endpoint_scan",
+        "description": (
+            "Crawl web targets for endpoints and URLs using katana (active) or gau (passive). "
+            "Returns a structured list of discovered endpoints. "
+            "Requires katana or gau installed (via playbook/install-script.sh). "
+            "Output feeds naturally into check_http_status or scan_directories."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "Single target URL to crawl (e.g., https://example.com)"
+                },
+                "urls_file": {
+                    "type": "string",
+                    "description": "Path to file with one URL per line (alternative to url)"
+                },
+                "scanner": {
+                    "type": "string",
+                    "description": "Crawler to use: 'katana' (active crawl) or 'gau' (passive URL fetch)",
+                    "enum": ["katana", "gau"],
+                    "default": "katana"
+                },
+                "depth": {
+                    "type": "integer",
+                    "description": "Maximum crawl depth for katana (default: 5)",
+                    "default": 5
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "description": "Max concurrent requests (default: 50)",
+                    "default": 50
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Request timeout in seconds (default: 10)",
+                    "default": 10
+                },
+                "output_file": {
+                    "type": "string",
+                    "description": "Output file path for discovered endpoints (default: endpoint_results.txt)",
+                    "default": "endpoint_results.txt"
+                }
+            }
+        }
     }
 ]
 
@@ -366,6 +490,7 @@ TOOLS = [
 # ---------------------------------------------------------------------------
 
 async def tool_enumerate_subdomains(args: dict) -> str:
+    t0 = time.time()
     from rek import SubdomainScanner
 
     domain = args["domain"]
@@ -394,31 +519,26 @@ async def tool_enumerate_subdomains(args: dict) -> str:
     all_subs = sorted(scanner.subdomains)
     validated = sorted(scanner.validated_subdomains)
 
-    lines = [
-        f"Subdomain enumeration complete for: {domain}",
-        f"Total discovered (unvalidated): {len(all_subs)}",
-        f"DNS-validated: {len(validated)}",
-        f"Output saved to: {output_file}",
-        "",
-    ]
-
-    if validated:
-        lines.append("DNS-Validated Subdomains:")
-        lines.extend(f"  {s}" for s in validated)
-    elif all_subs:
-        lines.append(f"Discovered Subdomains (first 100):")
-        lines.extend(f"  {s}" for s in all_subs[:100])
-        if len(all_subs) > 100:
-            lines.append(f"  ... and {len(all_subs) - 100} more (see {output_file})")
-
-    return "\n".join(lines)
+    return _ok("enumerate_subdomains", t0,
+        target=domain,
+        output_file=output_file,
+        total_discovered=len(all_subs),
+        total_validated=len(validated),
+        subdomains_discovered=all_subs[:500],
+        subdomains_validated=validated,
+    )
 
 
 async def tool_check_http_status(args: dict) -> str:
+    t0 = time.time()
     from rek import HTTPStatusChecker
 
     input_file = args["input_file"]
     output_file = args.get("output_file", "http_results.csv")
+
+    if not os.path.exists(input_file):
+        return _err("check_http_status", t0, f"Input file not found: {input_file}",
+                    input_file=input_file)
 
     checker = HTTPStatusChecker(
         timeout=args.get("timeout", 10),
@@ -426,28 +546,27 @@ async def tool_check_http_status(args: dict) -> str:
         silent=True
     )
 
-    if not os.path.exists(input_file):
-        return f"Error: input file not found: {input_file}"
-
     with open(input_file, "r", encoding="utf-8") as f:
         urls = [line.strip() for line in f if line.strip()]
 
     if not urls:
-        return "No URLs found in input file."
+        return _err("check_http_status", t0, "No URLs found in input file",
+                    input_file=input_file)
 
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
         await checker.check_all_urls(urls, output_file)
 
-    return (
-        f"HTTP status check complete.\n"
-        f"Input:  {input_file}\n"
-        f"Output: {output_file}\n"
-        f"Results written in CSV format with columns: Subdomain, URL, Status Code, Title, Server, Error"
+    return _ok("check_http_status", t0,
+        input_file=input_file,
+        output_file=output_file,
+        target_count=len(urls),
+        output_columns=["Subdomain", "URL", "Status Code", "Title", "Server", "Error"],
     )
 
 
 async def tool_scan_directories(args: dict) -> str:
+    t0 = time.time()
     from rek import DirectoryScanner
 
     scanner = DirectoryScanner(
@@ -471,10 +590,10 @@ async def tool_scan_directories(args: dict) -> str:
     elif url:
         urls = [url]
     else:
-        return "Error: must provide either a url or an input_file with status_codes."
+        return _err("scan_directories", t0, "Must provide either a url or an input_file with status_codes")
 
     if not urls:
-        return "No URLs to scan."
+        return _err("scan_directories", t0, "No URLs to scan after filtering")
 
     extensions_filter = None
     if args.get("extensions"):
@@ -490,14 +609,7 @@ async def tool_scan_directories(args: dict) -> str:
 
     scanner.save_results()
 
-    lines = [
-        "Directory scan complete.",
-        f"Scanned {len(scanner.results)} target(s).",
-    ]
-    if extensions_filter:
-        lines.append(f"Extension filter: {', '.join('.' + e for e in extensions_filter)}")
-    lines.append("")
-
+    findings_out = []
     for target_url, findings in scanner.results.items():
         hits = [f for f in findings if f.get("status_code") in (200, 301, 302, 403)]
         if extensions_filter:
@@ -508,17 +620,23 @@ async def tool_scan_directories(args: dict) -> str:
                     for ext in extensions_filter
                 )
             ]
-        lines.append(f"{target_url}: {len(hits)} paths found")
-        for f in hits[:20]:
-            lines.append(f"  [{f['status_code']}] {f['url']}")
-        if len(hits) > 20:
-            lines.append(f"  ... and {len(hits) - 20} more (see results/<domain>/dirs.csv)")
+        findings_out.append({
+            "target": target_url,
+            "paths_found": len(hits),
+            "paths": [{"status_code": f["status_code"], "url": f["url"]} for f in hits[:100]],
+        })
 
-    return "\n".join(lines)
+    return _ok("scan_directories", t0,
+        targets_scanned=len(scanner.results),
+        extension_filter=extensions_filter,
+        findings=findings_out,
+    )
 
 
 async def tool_search_emails(args: dict) -> str:
+    t0 = time.time()
     from rek_email_search import EmailSearcher
+    import csv as _csv
 
     output_file = args.get("output_file", "email_results.csv")
     username = args.get("org") or args.get("username")
@@ -545,7 +663,6 @@ async def tool_search_emails(args: dict) -> str:
     filtered_count = None
     if domain_filter and os.path.exists(output_file):
         import re as _re
-        import csv as _csv
         try:
             pattern = _re.compile(domain_filter, _re.IGNORECASE)
             with open(output_file, "r", encoding="utf-8", newline="") as fh:
@@ -561,17 +678,29 @@ async def tool_search_emails(args: dict) -> str:
         except Exception as fe:
             _log.warning("domain_filter post-processing failed: %s", fe)
 
-    summary = (
-        f"Email search complete.\n"
-        f"Output saved to: {output_file}\n"
-        f"CSV columns: Email, Repo, GitHubUser, Leaked, LeakedSource, CommitURL"
+    emails_found = 0
+    if os.path.exists(output_file):
+        try:
+            with open(output_file, "r", encoding="utf-8", newline="") as fh:
+                emails_found = max(0, sum(1 for _ in _csv.reader(fh)) - 1)
+        except Exception:
+            pass
+
+    result_fields: dict = dict(
+        target=args.get("email_domain") or username,
+        output_file=output_file,
+        emails_found=filtered_count if filtered_count is not None else emails_found,
+        output_columns=["Email", "Repo", "GitHubUser", "Leaked", "LeakedSource", "CommitURL"],
     )
-    if filtered_count is not None:
-        summary += f"\nDomain filter '{domain_filter}' applied — {filtered_count} email(s) retained."
-    return summary
+    if domain_filter is not None:
+        result_fields["domain_filter"] = domain_filter
+        result_fields["emails_after_filter"] = filtered_count
+
+    return _ok("search_emails", t0, **result_fields)
 
 
 async def tool_map_org_affiliations(args: dict) -> str:
+    t0 = time.time()
     from rek_org_intel import OrgIntelRunner
 
     target      = args["target"]
@@ -597,70 +726,45 @@ async def tool_map_org_affiliations(args: dict) -> str:
     affiliated_orgs = results.get("affiliated_orgs", [])
     api_findings    = results.get("api_findings", [])
 
-    spec_files  = [f for f in api_findings if f["type"] == "api_spec_file"]
-    route_hits  = [f for f in api_findings if f["type"] == "route_definition"]
-    cred_hits   = [f for f in api_findings if f["type"] == "api_credential"]
-    all_endpoints = list({
-        ep
-        for f in spec_files
-        for ep in f.get("endpoints", [])
-    })
+    spec_files    = [f for f in api_findings if f["type"] == "api_spec_file"]
+    route_hits    = [f for f in api_findings if f["type"] == "route_definition"]
+    cred_hits     = [f for f in api_findings if f["type"] == "api_credential"]
+    all_endpoints = list({ep for f in spec_files for ep in f.get("endpoints", [])})
 
     base = os.path.splitext(output_file)[0]
 
-    lines = [
-        f"Org intel complete for: {target}",
-        f"Entity type: {entity.get('type', 'unknown')}",
-        f"Public repos: {entity.get('public_repos', 'n/a')}",
-        "",
-        f"Affiliation mapping:",
-        f"  Members scanned:   {results.get('members_scanned', 0)}",
-        f"  Bridge members:    {len(bridge_members)}",
-        f"  Affiliated orgs:   {len(affiliated_orgs)}",
-        "",
-    ]
-
-    if affiliated_orgs:
-        lines.append("Top affiliated orgs (by shared member count):")
-        for a in affiliated_orgs[:10]:
-            lines.append(f"  {a['org']:30s}  {a['member_count']} shared member(s)")
-
-    if bridge_members:
-        lines.append("")
-        lines.append(f"Bridge members (pivot candidates):")
-        for member, orgs in list(bridge_members.items())[:10]:
-            lines.append(f"  {member:25s}  -> {', '.join(orgs[:5])}")
-
-    lines += [
-        "",
-        f"API surface discovery:",
-        f"  Spec files found:        {len(spec_files)}",
-        f"  Route definition hits:   {len(route_hits)}",
-        f"  Credential pattern hits: {len(cred_hits)}",
-        f"  Unique endpoints parsed: {len(all_endpoints)}",
-        "",
-    ]
-
-    if spec_files:
-        lines.append("API spec files:")
-        for f in spec_files[:15]:
-            ep_count = len(f.get("endpoints", []))
-            lines.append(f"  [{ep_count} endpoints] {f['org']}/{f['repo']} — {f['path']}")
-            lines.append(f"    {f['url']}")
-
-    lines += [
-        "",
-        f"Output files:",
-        f"  {base}_affiliations.csv",
-        f"  {base}_bridge_members.json",
-        f"  {base}_api_findings.csv",
-        f"  {base}_endpoints.txt  ({len(all_endpoints)} unique endpoints — feed into check_http_status)",
-    ]
-
-    return "\n".join(lines)
+    return _ok("map_org_affiliations", t0,
+        target=target,
+        entity_type=entity.get("type", "unknown"),
+        public_repos=entity.get("public_repos"),
+        members_scanned=results.get("members_scanned", 0),
+        bridge_members_count=len(bridge_members),
+        affiliated_orgs_count=len(affiliated_orgs),
+        top_affiliated_orgs=[
+            {"org": a["org"], "member_count": a["member_count"]}
+            for a in affiliated_orgs[:10]
+        ],
+        bridge_members=[
+            {"member": m, "orgs": orgs[:10]}
+            for m, orgs in list(bridge_members.items())[:20]
+        ],
+        api_surface={
+            "spec_files_found": len(spec_files),
+            "route_definition_hits": len(route_hits),
+            "credential_pattern_hits": len(cred_hits),
+            "unique_endpoints": len(all_endpoints),
+        },
+        output_files={
+            "affiliations": f"{base}_affiliations.csv",
+            "bridge_members": f"{base}_bridge_members.json",
+            "api_findings": f"{base}_api_findings.csv",
+            "endpoints": f"{base}_endpoints.txt",
+        },
+    )
 
 
 async def tool_run_playbook(args: dict) -> str:
+    t0 = time.time()
     domain = args["domain"]
     version = args.get("version", "v1")
     threads = args.get("threads", 100)
@@ -674,12 +778,12 @@ async def tool_run_playbook(args: dict) -> str:
     playbook_path = os.path.join(_SERVER_DIR, playbook)
 
     if not os.path.exists(playbook_path):
-        return f"Error: Playbook not found at {playbook_path}"
+        return _err("run_playbook", t0, f"Playbook not found: {playbook_path}",
+                    target=domain, playbook_version=version)
 
     output_dir = args.get("output_dir")
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
-    # v2 and standard have no -o flag — cwd change is the correct mechanism for those
     cwd = output_dir if (output_dir and version != "v1") else _SERVER_DIR
 
     cmd = ["bash", playbook_path, "-d", domain, "-t", str(threads)]
@@ -703,15 +807,175 @@ async def tool_run_playbook(args: dict) -> str:
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=3600)
         output = stdout.decode("utf-8", errors="replace")
-        tail = output[-5000:] if len(output) > 5000 else output
-        return (
-            f"Playbook '{version}' finished for {domain} (exit code {proc.returncode}).\n\n"
-            f"--- Output (last 5000 chars) ---\n{tail}"
+        tail = output[-3000:] if len(output) > 3000 else output
+        return _ok("run_playbook", t0,
+            target=domain,
+            playbook_version=version,
+            exit_code=proc.returncode,
+            output_dir=output_dir,
+            raw_output_tail=tail,
         )
     except asyncio.TimeoutError:
-        return f"Playbook timed out after 1 hour for {domain}."
+        return _err("run_playbook", t0, "Playbook timed out after 1 hour",
+                    target=domain, playbook_version=version)
     except Exception as e:
-        return f"Error running playbook: {e}"
+        return _err("run_playbook", t0, str(e),
+                    target=domain, playbook_version=version)
+
+
+async def tool_run_port_scan(args: dict) -> str:
+    t0 = time.time()
+    host       = args.get("host")
+    hosts_file = args.get("hosts_file")
+    ports      = args.get("ports", "80,443,3000,5000,8000,8001,8080,8081,8088,8443,8888,9000")
+    output_file = args.get("output_file", "port_results.txt")
+
+    if not host and not hosts_file:
+        return _err("run_port_scan", t0, "Must provide either host or hosts_file")
+    if hosts_file and not os.path.exists(hosts_file):
+        return _err("run_port_scan", t0, f"hosts_file not found: {hosts_file}")
+
+    cmd = [
+        "naabu",
+        "-p", ports,
+        "-c", str(args.get("concurrency", 100)),
+        "-timeout", str(args.get("timeout", 10)),
+        "-silent",
+    ]
+    if host:
+        cmd += ["-host", host]
+    else:
+        cmd += ["-l", hosts_file]
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=_SERVER_DIR,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
+        output = stdout.decode("utf-8", errors="replace").strip()
+
+        if proc.returncode != 0 and not output:
+            err_msg = stderr.decode("utf-8", errors="replace").strip()
+            return _err("run_port_scan", t0,
+                        err_msg or f"naabu exited {proc.returncode}",
+                        target=host or hosts_file)
+
+        open_ports = []
+        for line in output.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if ":" in line:
+                h, p = line.rsplit(":", 1)
+                open_ports.append({"host": h, "port": int(p) if p.isdigit() else p})
+            else:
+                open_ports.append({"host": line, "port": None})
+
+        with open(output_file, "w", encoding="utf-8") as fh:
+            fh.write(output)
+
+        return _ok("run_port_scan", t0,
+            target=host or hosts_file,
+            ports_scanned=ports,
+            open_ports_count=len(open_ports),
+            open_ports=open_ports[:500],
+            output_file=output_file,
+        )
+    except FileNotFoundError:
+        return _err("run_port_scan", t0,
+                    "naabu not found — install via playbook/install-script.sh",
+                    target=host or hosts_file)
+    except asyncio.TimeoutError:
+        return _err("run_port_scan", t0, "Port scan timed out after 10 minutes",
+                    target=host or hosts_file)
+    except Exception as e:
+        return _err("run_port_scan", t0, str(e), target=host or hosts_file)
+
+
+async def tool_run_endpoint_scan(args: dict) -> str:
+    t0 = time.time()
+    url        = args.get("url")
+    urls_file  = args.get("urls_file")
+    scanner    = args.get("scanner", "katana")
+    depth      = args.get("depth", 5)
+    concurrency = args.get("concurrency", 50)
+    timeout    = args.get("timeout", 10)
+    output_file = args.get("output_file", "endpoint_results.txt")
+
+    if not url and not urls_file:
+        return _err("run_endpoint_scan", t0, "Must provide either url or urls_file")
+    if urls_file and not os.path.exists(urls_file):
+        return _err("run_endpoint_scan", t0, f"urls_file not found: {urls_file}")
+
+    if scanner == "katana":
+        cmd = [
+            "katana",
+            "-d", str(depth),
+            "-c", str(concurrency),
+            "-timeout", str(timeout),
+            "-silent",
+        ]
+        if url:
+            cmd += ["-u", url]
+        else:
+            cmd += ["-list", urls_file]
+    else:  # gau
+        cmd = [
+            "gau",
+            "--threads", str(concurrency),
+            "--blacklist", "jpg,jpeg,png,gif,svg,css,woff,woff2,ttf,ico",
+        ]
+        if url:
+            from urllib.parse import urlparse
+            cmd.append(urlparse(url).netloc or url)
+        else:
+            # gau doesn't accept a file natively — read and pass domain list
+            with open(urls_file, "r", encoding="utf-8") as fh:
+                from urllib.parse import urlparse
+                domains = list({urlparse(l.strip()).netloc for l in fh if l.strip()})
+            cmd.extend(domains)
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=_SERVER_DIR,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
+        output = stdout.decode("utf-8", errors="replace").strip()
+
+        if proc.returncode != 0 and not output:
+            err_msg = stderr.decode("utf-8", errors="replace").strip()
+            return _err("run_endpoint_scan", t0,
+                        err_msg or f"{scanner} exited {proc.returncode}",
+                        target=url or urls_file, scanner=scanner)
+
+        endpoints = [line.strip() for line in output.splitlines() if line.strip()]
+
+        with open(output_file, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(endpoints))
+
+        return _ok("run_endpoint_scan", t0,
+            target=url or urls_file,
+            scanner=scanner,
+            depth=depth if scanner == "katana" else None,
+            endpoints_found=len(endpoints),
+            endpoints=endpoints[:1000],
+            output_file=output_file,
+        )
+    except FileNotFoundError:
+        return _err("run_endpoint_scan", t0,
+                    f"{scanner} not found — install via playbook/install-script.sh",
+                    target=url or urls_file, scanner=scanner)
+    except asyncio.TimeoutError:
+        return _err("run_endpoint_scan", t0, "Endpoint scan timed out after 10 minutes",
+                    target=url or urls_file, scanner=scanner)
+    except Exception as e:
+        return _err("run_endpoint_scan", t0, str(e), target=url or urls_file)
 
 
 # ---------------------------------------------------------------------------
@@ -725,6 +989,8 @@ HANDLERS = {
     "search_emails":         tool_search_emails,
     "map_org_affiliations":  tool_map_org_affiliations,
     "run_playbook":          tool_run_playbook,
+    "run_port_scan":         tool_run_port_scan,
+    "run_endpoint_scan":     tool_run_endpoint_scan,
 }
 
 # ---------------------------------------------------------------------------
