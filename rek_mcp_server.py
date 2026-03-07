@@ -115,6 +115,10 @@ TOOLS = [
                 "output_file": {
                     "type": "string",
                     "description": "Output file path for results (default: <domain>_results.txt)"
+                },
+                "resolvers": {
+                    "type": "string",
+                    "description": "Comma-separated custom DNS resolver IPs to use (e.g., 8.8.8.8,1.1.1.1)"
                 }
             },
             "required": ["domain"]
@@ -191,6 +195,10 @@ TOOLS = [
                     "type": "integer",
                     "description": "Max concurrent requests (default: 50)",
                     "default": 50
+                },
+                "extensions": {
+                    "type": "string",
+                    "description": "Comma-separated file extensions to filter results (e.g., .php,.asp,.env,.bak)"
                 }
             }
         }
@@ -238,6 +246,10 @@ TOOLS = [
                     "type": "string",
                     "description": "Output CSV file path (default: email_results.csv)",
                     "default": "email_results.csv"
+                },
+                "domain_filter": {
+                    "type": "string",
+                    "description": "Regex pattern to filter returned emails by domain (e.g., gmail\\.com|yahoo\\.com)"
                 }
             }
         }
@@ -282,6 +294,11 @@ TOOLS = [
                     "type": "string",
                     "description": "Base path for output files (default: org_intel_results.csv)",
                     "default": "org_intel_results.csv"
+                },
+                "scan_affiliated_count": {
+                    "type": "integer",
+                    "description": "How many top affiliated orgs receive the Phase 2 API surface scan (default: 5)",
+                    "default": 5
                 }
             },
             "required": ["target"]
@@ -333,6 +350,10 @@ TOOLS = [
                     "type": "boolean",
                     "description": "Skip JavaScript analysis phase (default: false)",
                     "default": False
+                },
+                "output_dir": {
+                    "type": "string",
+                    "description": "Custom output directory for playbook results (default: server working directory)"
                 }
             },
             "required": ["domain"]
@@ -357,6 +378,10 @@ async def tool_enumerate_subdomains(args: dict) -> str:
         retries=args.get("retries", 3),
         silent=True
     )
+    if args.get("resolvers"):
+        resolver_list = [r.strip() for r in args["resolvers"].split(",") if r.strip()]
+        if resolver_list and hasattr(scanner, "resolvers"):
+            scanner.resolvers = resolver_list
 
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
@@ -451,6 +476,14 @@ async def tool_scan_directories(args: dict) -> str:
     if not urls:
         return "No URLs to scan."
 
+    extensions_filter = None
+    if args.get("extensions"):
+        extensions_filter = [
+            e.strip().lstrip(".").lower()
+            for e in args["extensions"].split(",")
+            if e.strip()
+        ]
+
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
         await scanner.scan_all_urls(urls, wordlist)
@@ -460,10 +493,21 @@ async def tool_scan_directories(args: dict) -> str:
     lines = [
         "Directory scan complete.",
         f"Scanned {len(scanner.results)} target(s).",
-        "",
     ]
+    if extensions_filter:
+        lines.append(f"Extension filter: {', '.join('.' + e for e in extensions_filter)}")
+    lines.append("")
+
     for target_url, findings in scanner.results.items():
         hits = [f for f in findings if f.get("status_code") in (200, 301, 302, 403)]
+        if extensions_filter:
+            hits = [
+                f for f in hits
+                if any(
+                    f["url"].lower().endswith("." + ext) or ("." + ext + "/") in f["url"].lower()
+                    for ext in extensions_filter
+                )
+            ]
         lines.append(f"{target_url}: {len(hits)} paths found")
         for f in hits[:20]:
             lines.append(f"  [{f['status_code']}] {f['url']}")
@@ -497,11 +541,34 @@ async def tool_search_emails(args: dict) -> str:
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, _run)
 
-    return (
+    domain_filter = args.get("domain_filter")
+    filtered_count = None
+    if domain_filter and os.path.exists(output_file):
+        import re as _re
+        import csv as _csv
+        try:
+            pattern = _re.compile(domain_filter, _re.IGNORECASE)
+            with open(output_file, "r", encoding="utf-8", newline="") as fh:
+                rows = list(_csv.reader(fh))
+            header = rows[0] if rows else []
+            matched = [r for r in rows[1:] if r and pattern.search(r[0])]
+            with open(output_file, "w", encoding="utf-8", newline="") as fh:
+                w = _csv.writer(fh)
+                if header:
+                    w.writerow(header)
+                w.writerows(matched)
+            filtered_count = len(matched)
+        except Exception as fe:
+            _log.warning("domain_filter post-processing failed: %s", fe)
+
+    summary = (
         f"Email search complete.\n"
         f"Output saved to: {output_file}\n"
         f"CSV columns: Email, Repo, GitHubUser, Leaked, LeakedSource, CommitURL"
     )
+    if filtered_count is not None:
+        summary += f"\nDomain filter '{domain_filter}' applied — {filtered_count} email(s) retained."
+    return summary
 
 
 async def tool_map_org_affiliations(args: dict) -> str:
@@ -521,6 +588,7 @@ async def tool_map_org_affiliations(args: dict) -> str:
             max_members=args.get("max_members", 100),
             max_repos=args.get("max_repos", 30),
             output_file=output_file,
+            scan_affiliated_count=args.get("scan_affiliated_count", 5),
         )
     )
 
@@ -608,6 +676,11 @@ async def tool_run_playbook(args: dict) -> str:
     if not os.path.exists(playbook_path):
         return f"Error: Playbook not found at {playbook_path}"
 
+    output_dir = args.get("output_dir")
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+    cwd = output_dir or _SERVER_DIR
+
     cmd = ["bash", playbook_path, "-d", domain, "-t", str(threads)]
     if args.get("chaos_key"):
         cmd += ["--chaos-key", args["chaos_key"]]
@@ -623,7 +696,7 @@ async def tool_run_playbook(args: dict) -> str:
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            cwd=_SERVER_DIR
+            cwd=cwd
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=3600)
         output = stdout.decode("utf-8", errors="replace")

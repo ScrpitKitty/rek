@@ -403,16 +403,17 @@ class OrgIntelRunner:
 
     def run(
         self,
-        target:      str,
-        token:       Optional[str] = None,
-        max_members: int = 100,
-        max_repos:   int = 30,
-        output_file: str = "org_intel_results.csv",
+        target:                str,
+        token:                 Optional[str] = None,
+        max_members:           int = 100,
+        max_repos:             int = 30,
+        output_file:           str = "org_intel_results.csv",
+        scan_affiliated_count: int = 5,
     ) -> dict:
         """
         Full run:
           1. Resolve entity and map cross-org affiliations
-          2. API surface scan across target + top 5 affiliated orgs
+          2. API surface scan across target + top N affiliated orgs
           3. Save structured output files
         """
         if not self.silent:
@@ -426,9 +427,9 @@ class OrgIntelRunner:
         if not self.silent:
             print(f"[+] {bridge_count} bridge members across {affiliated_count} affiliated orgs")
 
-        # Phase 2 — API surface scan on target + top affiliated orgs
+        # Phase 2 — API surface scan on target + top N affiliated orgs
         scan_targets = [target] + [
-            a["org"] for a in affiliations["affiliated_orgs"][:5]
+            a["org"] for a in affiliations["affiliated_orgs"][:scan_affiliated_count]
         ]
         all_api_findings = []
         for scan_target in scan_targets:
