@@ -648,6 +648,58 @@ TOOLS = [
             },
             "required": ["target"]
         }
+    },
+    {
+        "name": "get_prioritized_findings",
+        "description": (
+            "Analyze recon state graph data for a target and return findings ranked by "
+            "investigative interest using deterministic rule-based scoring. "
+            "Scoring rules: subdomain keywords (+5 per match: admin, internal, dev, staging, "
+            "beta, debug, test, backup, old), suspicious ports (+4 each: 3000, 5000, 5601, "
+            "6379, 8081, 9000, 9200, 2375), sensitive endpoints (+5 per pattern: /admin, "
+            "/debug, /.git, /config, /graphql, /internal, /api/internal), exposed services "
+            "(+4 each: Jenkins, Grafana, Elasticsearch, Kibana, phpMyAdmin). "
+            "Returns three priority buckets: high (>=10), medium (>=5), low (<5). "
+            "Run enumerate_subdomains, run_port_scan, and run_endpoint_scan first to populate state."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": "Target domain to analyze (e.g., example.com)"
+                },
+                "min_score": {
+                    "type": "integer",
+                    "description": "Exclude findings below this score (default: 0 — return all)",
+                    "default": 0
+                }
+            },
+            "required": ["target"]
+        }
+    },
+    {
+        "name": "get_top_targets",
+        "description": (
+            "Return the top-N highest-scoring investigation targets for a domain "
+            "from the recon intelligence engine. Combines all priority tiers sorted "
+            "by score descending. Useful for deciding where to focus next."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": "Target domain to query (e.g., example.com)"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of findings to return (default: 10)",
+                    "default": 10
+                }
+            },
+            "required": ["target"]
+        }
     }
 ]
 
@@ -1306,19 +1358,63 @@ async def tool_run_incremental_recon(args: dict) -> str:
 # Dispatch table
 # ---------------------------------------------------------------------------
 
+async def tool_get_prioritized_findings(args: dict) -> str:
+    t0 = time.time()
+    from rek_intel import intel_engine
+    target    = args["target"]
+    min_score = args.get("min_score", 0)
+
+    result = intel_engine.analyze_target(target)
+
+    if min_score > 0:
+        for tier in ("high_priority", "medium_priority", "low_priority"):
+            result[tier] = [f for f in result[tier] if f["score"] >= min_score]
+
+    return _ok("get_prioritized_findings", t0,
+        target=target,
+        hosts_analyzed=result["hosts_analyzed"],
+        high_priority=result["high_priority"],
+        medium_priority=result["medium_priority"],
+        low_priority=result["low_priority"],
+        scoring_metadata=result["scoring_metadata"],
+        summary={
+            "high_count":   len(result["high_priority"]),
+            "medium_count": len(result["medium_priority"]),
+            "low_count":    len(result["low_priority"]),
+            "min_score_filter": min_score,
+        },
+    )
+
+
+async def tool_get_top_targets(args: dict) -> str:
+    t0 = time.time()
+    from rek_intel import intel_engine
+    target  = args["target"]
+    limit   = args.get("limit", 10)
+    findings = intel_engine.get_top_targets(target, limit)
+    return _ok("get_top_targets", t0,
+        target=target,
+        limit=limit,
+        count=len(findings),
+        findings=findings,
+    )
+
+
 HANDLERS = {
-    "enumerate_subdomains":  tool_enumerate_subdomains,
-    "check_http_status":     tool_check_http_status,
-    "scan_directories":      tool_scan_directories,
-    "search_emails":         tool_search_emails,
-    "map_org_affiliations":  tool_map_org_affiliations,
-    "run_playbook":          tool_run_playbook,
-    "run_port_scan":         tool_run_port_scan,
-    "run_endpoint_scan":     tool_run_endpoint_scan,
-    "query_target_state":    tool_query_target_state,
-    "query_subdomains":      tool_query_subdomains,
-    "query_services":        tool_query_services,
-    "run_incremental_recon": tool_run_incremental_recon,
+    "enumerate_subdomains":    tool_enumerate_subdomains,
+    "check_http_status":       tool_check_http_status,
+    "scan_directories":        tool_scan_directories,
+    "search_emails":           tool_search_emails,
+    "map_org_affiliations":    tool_map_org_affiliations,
+    "run_playbook":            tool_run_playbook,
+    "run_port_scan":           tool_run_port_scan,
+    "run_endpoint_scan":       tool_run_endpoint_scan,
+    "query_target_state":      tool_query_target_state,
+    "query_subdomains":        tool_query_subdomains,
+    "query_services":          tool_query_services,
+    "run_incremental_recon":   tool_run_incremental_recon,
+    "get_prioritized_findings": tool_get_prioritized_findings,
+    "get_top_targets":         tool_get_top_targets,
 }
 
 # ---------------------------------------------------------------------------
