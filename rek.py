@@ -40,6 +40,7 @@ class SubdomainScanner:
         self.concurrency = concurrency
         self.retries = retries
         self.silent = silent
+        self.resolvers = ['8.8.8.8', '8.8.4.4', '1.1.1.1', '9.9.9.9']
         self.subdomains: Set[str] = set()
         self.validated_subdomains: Set[str] = set()
         self.headers = {
@@ -166,7 +167,7 @@ class SubdomainScanner:
     async def dns_brute_force(self, domain: str, wordlist: List[str], semaphore: asyncio.Semaphore):
         """Perform DNS brute-forcing with a wordlist asynchronously."""
         resolver = dns.resolver.Resolver()
-        resolver.nameservers = ['8.8.8.8', '8.8.4.4', '1.1.1.1', '9.9.9.9']
+        resolver.nameservers = self.resolvers
         resolver.timeout = self.timeout
         resolver.lifetime = self.timeout
 

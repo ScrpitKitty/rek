@@ -679,7 +679,8 @@ async def tool_run_playbook(args: dict) -> str:
     output_dir = args.get("output_dir")
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
-    cwd = output_dir or _SERVER_DIR
+    # v2 and standard have no -o flag — cwd change is the correct mechanism for those
+    cwd = output_dir if (output_dir and version != "v1") else _SERVER_DIR
 
     cmd = ["bash", playbook_path, "-d", domain, "-t", str(threads)]
     if args.get("chaos_key"):
@@ -690,6 +691,8 @@ async def tool_run_playbook(args: dict) -> str:
         cmd.append("--skip-portscan")
     if args.get("skip_jsanalysis"):
         cmd.append("--skip-jsanalysis")
+    if output_dir and version == "v1":
+        cmd += ["-o", output_dir]
 
     try:
         proc = await asyncio.create_subprocess_exec(
