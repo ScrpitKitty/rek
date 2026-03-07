@@ -751,6 +751,99 @@ TOOLS = [
             },
             "required": ["target"]
         }
+    },
+    {
+        "name": "schedule_target",
+        "description": (
+            "Apply deterministic planning rules to a target and enqueue recon tasks "
+            "into the scheduler queue. Rules inspect the state graph for new/stale "
+            "assets and high-priority findings, then produce a prioritised task list. "
+            "No tasks are executed — use run_scheduler to execute. "
+            "Modes: standard (default), passive_only, review_queue_only."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": "Root domain to plan for (e.g., example.com)"
+                },
+                "mode": {
+                    "type": "string",
+                    "description": (
+                        "Scheduler mode: standard | passive_only | "
+                        "review_queue_only | immediate_execute (default: standard)"
+                    )
+                },
+                "org": {
+                    "type": "string",
+                    "description": "Organisation name for ASN expansion (optional)"
+                }
+            },
+            "required": ["target"]
+        }
+    },
+    {
+        "name": "run_scheduler",
+        "description": (
+            "Execute pending scheduled tasks from the recon scheduler queue. Tasks "
+            "are run in priority order with dependency checking. Returns a summary "
+            "of completed and failed tasks. Use schedule_target first to populate "
+            "the queue. Optionally filter by target domain."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": "Only run tasks for this target (optional — default: all targets)"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of tasks to execute (default: 10)",
+                    "default": 10
+                },
+                "mode": {
+                    "type": "string",
+                    "description": (
+                        "Execution mode: standard | passive_only | "
+                        "review_queue_only (default: standard)"
+                    )
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "get_scheduler_status",
+        "description": (
+            "Return a summary of the current scheduler queue: counts of pending, "
+            "running, completed, skipped, deferred, and failed tasks, plus the "
+            "timestamp of the last scheduler run."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    },
+    {
+        "name": "get_target_plan",
+        "description": (
+            "Return the current pending task queue for a specific target without "
+            "executing anything. Shows task type, tool, priority, reason, and "
+            "dependency information for all queued tasks."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": "Target domain to query (e.g., example.com)"
+                }
+            },
+            "required": ["target"]
+        }
     }
 ]
 
@@ -1495,6 +1588,78 @@ async def tool_list_discovered_assets(args: dict) -> str:
     )
 
 
+async def tool_schedule_target(args: dict) -> str:
+    t0 = time.time()
+    from rek_scheduler import ReconScheduler
+
+    target = args["target"]
+    mode   = args.get("mode", "standard")
+    org    = args.get("org", "")
+
+    sched = ReconScheduler(mode=mode)
+    loop  = asyncio.get_running_loop()
+
+    # review_queue_only: plan but don't enqueue
+    enqueue = (mode != "review_queue_only")
+    tasks   = await loop.run_in_executor(
+        None, lambda: sched.plan(target, org=org, mode=mode, enqueue=enqueue)
+    )
+
+    return _ok("schedule_target", t0,
+        target=target,
+        mode=mode,
+        enqueued=enqueue,
+        tasks_planned=len(tasks),
+        tasks=tasks,
+    )
+
+
+async def tool_run_scheduler(args: dict) -> str:
+    t0 = time.time()
+    from rek_scheduler import ReconScheduler
+
+    target = args.get("target")
+    limit  = int(args.get("limit", 10))
+    mode   = args.get("mode", "standard")
+
+    sched  = ReconScheduler(mode=mode)
+    loop   = asyncio.get_running_loop()
+    result = await loop.run_in_executor(
+        None, lambda: sched.run(target, limit=limit, mode=mode)
+    )
+
+    return _ok("run_scheduler", t0,
+        target=target or "all",
+        mode=result["mode"],
+        tasks_run=result["tasks_run"],
+        tasks_failed=result["tasks_failed"],
+        completed_ids=result["completed_ids"],
+        failed_ids=result["failed_ids"],
+    )
+
+
+async def tool_get_scheduler_status(args: dict) -> str:
+    t0 = time.time()
+    from rek_scheduler import recon_scheduler
+
+    summary = recon_scheduler.status()
+    return _ok("get_scheduler_status", t0, **summary)
+
+
+async def tool_get_target_plan(args: dict) -> str:
+    t0 = time.time()
+    from rek_scheduler import recon_scheduler
+
+    target = args["target"]
+    tasks  = recon_scheduler.queue(target)
+
+    return _ok("get_target_plan", t0,
+        target=target,
+        pending_count=len(tasks),
+        tasks=tasks,
+    )
+
+
 HANDLERS = {
     "enumerate_subdomains":    tool_enumerate_subdomains,
     "check_http_status":       tool_check_http_status,
@@ -1512,6 +1677,10 @@ HANDLERS = {
     "get_top_targets":         tool_get_top_targets,
     "expand_target":           tool_expand_target,
     "list_discovered_assets":  tool_list_discovered_assets,
+    "schedule_target":         tool_schedule_target,
+    "run_scheduler":           tool_run_scheduler,
+    "get_scheduler_status":    tool_get_scheduler_status,
+    "get_target_plan":         tool_get_target_plan,
 }
 
 # ---------------------------------------------------------------------------
