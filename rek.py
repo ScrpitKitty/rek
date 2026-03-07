@@ -956,7 +956,7 @@ class ReconTool:
             print(
                 colored("1. ", "green") +
                 colored("Subdomain Enumeration", "light_green") + ": " +
-                colored("python3 rek-beta.py ", "green") +
+                colored("python3 rek.py ", "green") +
                 colored("-d", "cyan") + " xyz.com " +
                 colored("-w", "cyan") + " subdomains.txt " +
                 colored("--dir-wordlist", "cyan") + " common.txt " +
@@ -967,7 +967,7 @@ class ReconTool:
             print(
                 colored("2. ", "green") +
                 colored("HTTP Status Checking", "light_green") + ": " +
-                colored("python3 rek-beta.py ", "green") +
+                colored("python3 rek.py ", "green") +
                 colored("--input", "cyan") + " results.txt " +
                 colored("-o", "cyan") + " http_results.csv " +
                 colored("-t", "cyan") + " 15 " +
@@ -976,7 +976,7 @@ class ReconTool:
             print(
                 colored("3. ", "green") +
                 colored("Directory Scanning", "light_green") + ": " +
-                colored("python3 rek-beta.py ", "green") +
+                colored("python3 rek.py ", "green") +
                 colored("--input", "cyan") + " http_results.csv " +
                 colored("--status", "cyan") + " 200,301 " +
                 colored("--dir-wordlist", "cyan") + " common.txt " +
@@ -998,7 +998,7 @@ class ReconTool:
             print(
                 colored("1. ", "green") +
                 colored("Search by Domain", "light_green") + ": " +
-                colored("python3 rek-beta.py ", "green") +
+                colored("python3 rek.py ", "green") +
                 colored("--email-domain", "cyan") + " xyz.com " +
                 colored("-o", "cyan") + " email_results.csv " +
                 colored("--token", "cyan") + " ghp_xxx " +
@@ -1008,7 +1008,7 @@ class ReconTool:
             print(
                 colored("2. ", "green") +
                 colored("Search by Username or Organization", "light_green") + ": " +
-                colored("python3 rek-beta.py ", "green") +
+                colored("python3 rek.py ", "green") +
                 colored("--org", "cyan") + " microsoft " +
                 colored("-o", "cyan") + " email_results.csv " +
                 colored("--token", "cyan") + " ghp_xxx " +
@@ -1333,7 +1333,7 @@ class ReconTool:
         else:
             try:
                 args_list = shlex.split(command)
-                script_names = ["rek-beta.py", "rek.py", "recon_tool.py"]
+                script_names = ["rek.py", "recon_tool.py"]
                 if args_list and args_list[0].startswith("python"):
                     args_list = args_list[1:]
                 if args_list and any(script_name in args_list[0] for script_name in script_names):
@@ -1392,7 +1392,7 @@ class ReconTool:
         print(colored("Example commands:", "yellow"))
         print(
             colored("  Subdomain Enumeration: ", "light_green") +
-            colored("python3 rek-beta.py ", "green") +
+            colored("python3 rek.py ", "green") +
             colored("-d", "cyan") + " xyz.com " +
             colored("-w", "cyan") + " subdomains.txt " +
             colored("-t", "cyan") + " 15 " +
@@ -1403,7 +1403,7 @@ class ReconTool:
         )
         print(
             colored("  HTTP Status Checking: ", "light_green") +
-            colored("python3 rek-beta.py ", "green") +
+            colored("python3 rek.py ", "green") +
             colored("--input", "cyan") + " results.txt " +
             colored("-o", "cyan") + " http_results.csv " +
             colored("-t", "cyan") + " 15 " +
@@ -1411,7 +1411,7 @@ class ReconTool:
         )
         print(
             colored("  Directory Scanning: ", "light_green") +
-            colored("python3 rek-beta.py ", "green") +
+            colored("python3 rek.py ", "green") +
             colored("--input", "cyan") + " http_results.csv " +
             colored("--status", "cyan") + " 200,301 " +
             colored("--dir-wordlist", "cyan") + " common.txt " +
@@ -1421,7 +1421,7 @@ class ReconTool:
         )
         print(
             colored("  Email Search: ", "light_green") +
-            colored("python3 rek-beta.py ", "green") +
+            colored("python3 rek.py ", "green") +
             colored("--email-domain", "cyan") + " xyz.com " +
             colored("-o", "cyan") + " email_results.csv " +
             colored("--token", "cyan") + " ghp_xxx " +

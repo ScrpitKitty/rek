@@ -3,7 +3,8 @@
     "allow": [
       "Bash(python:*)",
       "Bash(powershell:*)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(C:/Python313/python.exe:*)"
     ]
   }
 }

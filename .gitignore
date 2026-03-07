@@ -1,9 +1,10 @@
 # Allow Python scripts
 !*.py
-# Allow wordlists
+# Allow wordlists (only .txt files — prevents scan artifact files like IP-named outputs)
 !global_wordlist.txt
 !wordlists/
 !wordlists/*.txt
+wordlists/[0-9]*
 # Explicitly ignore specific files and directories
 results/
 venv/
