@@ -62,6 +62,77 @@ _log.addHandler(_fh)
 logging.getLogger().setLevel(logging.CRITICAL + 1)
 
 
+# ---------------------------------------------------------------------------
+# Recon state graph (persistent intelligence store)
+# ---------------------------------------------------------------------------
+
+from rek_state import state_graph as _state
+
+# ---------------------------------------------------------------------------
+# State update dispatcher — called after every successful tool result
+# ---------------------------------------------------------------------------
+
+def _update_state(tool_name: str, args: dict, result_json: str) -> None:
+    """
+    Parse a successful tool result JSON and push normalized entities into the
+    persistent state graph.  All errors are swallowed so a state write failure
+    never surfaces to the caller.
+    """
+    try:
+        result = json.loads(result_json)
+    except (json.JSONDecodeError, TypeError):
+        return
+    if result.get("exit_status") != "success":
+        return
+
+    try:
+        if tool_name == "enumerate_subdomains":
+            target = result.get("target", "")
+            if target:
+                _state.upsert_target(target)
+            for sub in result.get("subdomains_discovered", []):
+                _state.upsert_subdomain(sub, target, "enumerate_subdomains")
+            for sub in result.get("subdomains_validated", []):
+                _state.upsert_subdomain(sub, target, "enumerate_subdomains")
+
+        elif tool_name == "run_port_scan":
+            for entry in result.get("open_ports", []):
+                host = entry.get("host", "")
+                port = entry.get("port")
+                if host and port:
+                    _state.upsert_service(host, int(port))
+
+        elif tool_name in ("run_endpoint_scan", "scan_directories"):
+            if tool_name == "run_endpoint_scan":
+                for url in result.get("endpoints", []):
+                    _state.upsert_endpoint(url)
+            else:
+                for finding in result.get("findings", []):
+                    for path_entry in finding.get("paths", []):
+                        url = path_entry.get("url", "")
+                        if url:
+                            _state.upsert_endpoint(url)
+
+        elif tool_name == "check_http_status":
+            # Results live in the CSV; extract server tech from it if present
+            output_file = result.get("output_file", "")
+            if output_file and os.path.exists(output_file):
+                import csv as _csv
+                try:
+                    with open(output_file, "r", encoding="utf-8", newline="") as fh:
+                        reader = _csv.DictReader(fh)
+                        for row in reader:
+                            host = row.get("Subdomain", "").strip()
+                            server = row.get("Server", "").strip()
+                            if host and server and server not in ("-", ""):
+                                _state.upsert_technology(host, [server])
+                except Exception:
+                    pass
+
+    except Exception as e:
+        _log.debug("State update skipped for %s: %s", tool_name, e)
+
+
 # Redirect sys.stderr to the log file so nothing leaks to the StdIO stream
 class _StderrToLog:
     def write(self, msg: str) -> None:
@@ -481,6 +552,101 @@ TOOLS = [
                     "default": "endpoint_results.txt"
                 }
             }
+        }
+    },
+    {
+        "name": "query_target_state",
+        "description": (
+            "Return full aggregated recon intelligence for a target from the persistent state graph. "
+            "Includes all known subdomains, open services, discovered endpoints, and technology stack. "
+            "Call this before running new scans to understand what is already known."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": "Target domain to query (e.g., example.com)"
+                }
+            },
+            "required": ["target"]
+        }
+    },
+    {
+        "name": "query_subdomains",
+        "description": (
+            "Return all subdomains known for a target from the persistent state graph. "
+            "Faster than re-running enumeration when intelligence already exists."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": "Target domain to query (e.g., example.com)"
+                }
+            },
+            "required": ["target"]
+        }
+    },
+    {
+        "name": "query_services",
+        "description": (
+            "Return all known open ports and services for a specific host from the persistent state graph."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "host": {
+                    "type": "string",
+                    "description": "Hostname or IP to query (e.g., api.example.com)"
+                }
+            },
+            "required": ["host"]
+        }
+    },
+    {
+        "name": "run_incremental_recon",
+        "description": (
+            "Run reconnaissance only against assets not yet seen in the state graph. "
+            "Phase 1: enumerate subdomains and identify which are new. "
+            "Phase 2: port scan only new subdomains. "
+            "Phase 3: endpoint scan new hosts with open web ports. "
+            "Skips assets already known to the state graph to avoid redundant work. "
+            "All discoveries are persisted automatically."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": "Target domain to run incremental recon against"
+                },
+                "wordlist_path": {
+                    "type": "string",
+                    "description": "Path to custom subdomain wordlist (optional)"
+                },
+                "github_token": {
+                    "type": "string",
+                    "description": "GitHub token for subdomain enumeration (optional)"
+                },
+                "ports": {
+                    "type": "string",
+                    "description": "Ports to scan on new hosts (default: common web ports)",
+                    "default": "80,443,3000,5000,8000,8001,8080,8081,8088,8443,8888,9000"
+                },
+                "skip_port_scan": {
+                    "type": "boolean",
+                    "description": "Skip port scanning phase (default: false)",
+                    "default": False
+                },
+                "skip_endpoint_scan": {
+                    "type": "boolean",
+                    "description": "Skip endpoint scanning phase (default: false)",
+                    "default": False
+                }
+            },
+            "required": ["target"]
         }
     }
 ]
@@ -978,6 +1144,164 @@ async def tool_run_endpoint_scan(args: dict) -> str:
         return _err("run_endpoint_scan", t0, str(e), target=url or urls_file)
 
 
+async def tool_query_target_state(args: dict) -> str:
+    t0 = time.time()
+    target = args["target"]
+    snap   = _state.get_target_state(target)
+    return _ok("query_target_state", t0,
+        target=target,
+        **snap,
+    )
+
+
+async def tool_query_subdomains(args: dict) -> str:
+    t0 = time.time()
+    target = args["target"]
+    subs   = _state.get_known_subdomains(target)
+    return _ok("query_subdomains", t0,
+        target=target,
+        count=len(subs),
+        subdomains=subs,
+    )
+
+
+async def tool_query_services(args: dict) -> str:
+    t0 = time.time()
+    host  = args["host"]
+    ports = _state.get_open_ports(host)
+    endpoints = _state.get_endpoints(host)
+    tech  = _state.get_technology_stack(host)
+    return _ok("query_services", t0,
+        host=host,
+        open_ports=ports,
+        open_ports_count=len(ports),
+        endpoints=endpoints,
+        endpoints_count=len(endpoints),
+        technology_stack=tech,
+    )
+
+
+async def tool_run_incremental_recon(args: dict) -> str:
+    t0 = time.time()
+    target = args["target"]
+    ports  = args.get("ports", "80,443,3000,5000,8000,8001,8080,8081,8088,8443,8888,9000")
+
+    _state.upsert_target(target)
+    known_before = set(_state.get_known_subdomains(target))
+
+    # ------------------------------------------------------------------ #
+    # Phase 1 — Subdomain enumeration                                     #
+    # ------------------------------------------------------------------ #
+    from rek import SubdomainScanner
+    output_file = f"{target}_incremental.txt"
+    scanner = SubdomainScanner(
+        timeout=10,
+        wordlist_path=args.get("wordlist_path"),
+        concurrency=50,
+        retries=3,
+        silent=True,
+    )
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+        await scanner.enumerate_subdomains(
+            domain=target,
+            output_file=output_file,
+            github_token=args.get("github_token"),
+        )
+
+    all_discovered = sorted(scanner.subdomains | scanner.validated_subdomains)
+    new_subdomains = _state.get_new_subdomains(target, all_discovered)
+
+    for sub in all_discovered:
+        _state.upsert_subdomain(sub, target, "run_incremental_recon")
+
+    # ------------------------------------------------------------------ #
+    # Phase 2 — Port scan on new subdomains only                         #
+    # ------------------------------------------------------------------ #
+    new_services: list = []
+    if new_subdomains and not args.get("skip_port_scan", False):
+        for sub in new_subdomains:
+            cmd = [
+                "naabu",
+                "-host", sub,
+                "-p", ports,
+                "-c", "100",
+                "-timeout", "10",
+                "-silent",
+            ]
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=_SERVER_DIR,
+                )
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=120)
+                for line in stdout.decode("utf-8", errors="replace").splitlines():
+                    line = line.strip()
+                    if ":" in line:
+                        h, p = line.rsplit(":", 1)
+                        if p.isdigit():
+                            port_int = int(p)
+                            if _state.upsert_service(h, port_int):
+                                new_services.append({"host": h, "port": port_int})
+            except (FileNotFoundError, asyncio.TimeoutError, Exception):
+                pass
+
+    # ------------------------------------------------------------------ #
+    # Phase 3 — Endpoint scan on new web-facing services                 #
+    # ------------------------------------------------------------------ #
+    new_endpoints: list = []
+    web_ports = {80, 443, 8000, 8001, 8080, 8081, 8088, 8443, 8888}
+    if not args.get("skip_endpoint_scan", False):
+        web_targets = [
+            f"{'https' if svc['port'] in (443, 8443) else 'http'}://{svc['host']}:{svc['port']}"
+            for svc in new_services
+            if svc["port"] in web_ports
+        ]
+        for web_url in web_targets:
+            cmd = [
+                "katana",
+                "-u", web_url,
+                "-d", "3",
+                "-c", "30",
+                "-timeout", "10",
+                "-silent",
+            ]
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=_SERVER_DIR,
+                )
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=120)
+                for line in stdout.decode("utf-8", errors="replace").splitlines():
+                    url = line.strip()
+                    if url and _state.upsert_endpoint(url):
+                        new_endpoints.append(url)
+            except (FileNotFoundError, asyncio.TimeoutError, Exception):
+                pass
+
+    return _ok("run_incremental_recon", t0,
+        target=target,
+        known_subdomains_before=len(known_before),
+        total_subdomains_after=len(known_before) + len(new_subdomains),
+        new_subdomains_discovered=new_subdomains,
+        new_subdomains_count=len(new_subdomains),
+        new_services_discovered=new_services,
+        new_services_count=len(new_services),
+        new_endpoints_discovered=new_endpoints[:500],
+        new_endpoints_count=len(new_endpoints),
+        phases_skipped=[
+            p for p, skip in [
+                ("port_scan", args.get("skip_port_scan", False)),
+                ("endpoint_scan", args.get("skip_endpoint_scan", False)),
+            ] if skip
+        ],
+    )
+
+
 # ---------------------------------------------------------------------------
 # Dispatch table
 # ---------------------------------------------------------------------------
@@ -991,6 +1315,10 @@ HANDLERS = {
     "run_playbook":          tool_run_playbook,
     "run_port_scan":         tool_run_port_scan,
     "run_endpoint_scan":     tool_run_endpoint_scan,
+    "query_target_state":    tool_query_target_state,
+    "query_subdomains":      tool_query_subdomains,
+    "query_services":        tool_query_services,
+    "run_incremental_recon": tool_run_incremental_recon,
 }
 
 # ---------------------------------------------------------------------------
@@ -1053,6 +1381,8 @@ async def process_request(request: dict) -> dict | None:
             _log.info("CALL %s  args=%s", tool_name, arguments)
             result_text = await handler(arguments)
             _log.info("DONE %s", tool_name)
+            # Persist normalized entities to the recon state graph
+            _update_state(tool_name, arguments, result_text)
             return {
                 "jsonrpc": "2.0",
                 "id": req_id,
