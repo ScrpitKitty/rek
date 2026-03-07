@@ -700,6 +700,57 @@ TOOLS = [
             },
             "required": ["target"]
         }
+    },
+    {
+        "name": "expand_target",
+        "description": (
+            "Run passive target expansion against one or more public intelligence "
+            "sources (crt.sh CT logs, TLS SANs, BGPView ASN, HackerTarget passive "
+            "DNS, ThreatMiner passive DNS). Discovered subdomains and CIDR blocks are "
+            "written into the persistent state graph. No active probes are sent to the "
+            "target — all data comes from third-party public APIs."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": "Root domain to expand (e.g., example.com)"
+                },
+                "org": {
+                    "type": "string",
+                    "description": "Organisation name for ASN/BGPView lookup (optional)"
+                },
+                "sources": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Expansion sources to run. Valid values: ct, san, asn, "
+                        "hackertarget, threatminer. Defaults to all sources."
+                    )
+                }
+            },
+            "required": ["target"]
+        }
+    },
+    {
+        "name": "list_discovered_assets",
+        "description": (
+            "Return all assets discovered and stored in the recon state graph for a "
+            "target: subdomains, open services, crawled endpoints, tech stack, and "
+            "infrastructure CIDR blocks. Useful for a full inventory snapshot before "
+            "deciding on next recon steps."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": "Target domain to query (e.g., example.com)"
+                }
+            },
+            "required": ["target"]
+        }
     }
 ]
 
@@ -1400,6 +1451,50 @@ async def tool_get_top_targets(args: dict) -> str:
     )
 
 
+async def tool_expand_target(args: dict) -> str:
+    t0 = time.time()
+    from rek_expand import expansion_engine
+
+    target  = args["target"]
+    org     = args.get("org", "")
+    sources = args.get("sources") or None  # None → expand_all uses ALL_SOURCES
+
+    loop   = asyncio.get_running_loop()
+    result = await loop.run_in_executor(
+        None, lambda: expansion_engine.expand_all(target, org, sources)
+    )
+
+    return _ok("expand_target", t0,
+        target=target,
+        sources_run=result["sources_run"],
+        new_subdomains=result["new_subdomains"],
+        new_infra_cidrs=result["new_infra_cidrs"],
+        per_source=result["per_source"],
+    )
+
+
+async def tool_list_discovered_assets(args: dict) -> str:
+    t0 = time.time()
+    from rek_expand import expansion_engine
+
+    target = args["target"]
+
+    loop   = asyncio.get_running_loop()
+    result = await loop.run_in_executor(
+        None, lambda: expansion_engine.list_discovered_assets(target)
+    )
+
+    return _ok("list_discovered_assets", t0,
+        target=target,
+        subdomains=result["subdomains"],
+        services=result["services"],
+        endpoints=result["endpoints"],
+        technologies=result["technologies"],
+        infrastructure=result["infrastructure"],
+        stats=result["stats"],
+    )
+
+
 HANDLERS = {
     "enumerate_subdomains":    tool_enumerate_subdomains,
     "check_http_status":       tool_check_http_status,
@@ -1415,6 +1510,8 @@ HANDLERS = {
     "run_incremental_recon":   tool_run_incremental_recon,
     "get_prioritized_findings": tool_get_prioritized_findings,
     "get_top_targets":         tool_get_top_targets,
+    "expand_target":           tool_expand_target,
+    "list_discovered_assets":  tool_list_discovered_assets,
 }
 
 # ---------------------------------------------------------------------------

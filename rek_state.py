@@ -71,7 +71,7 @@ _slog.addHandler(_sfh)
 def _ts() -> str:
     return datetime.now(timezone.utc).isoformat()
 
-_ENTITY_KEYS = ("targets", "subdomains", "services", "endpoints", "technologies")
+_ENTITY_KEYS = ("targets", "subdomains", "services", "endpoints", "technologies", "infrastructure")
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +317,46 @@ class ReconStateGraph:
             return entry["tech_stack"] if entry else []
 
     # ------------------------------------------------------------------
+    # Infrastructure (ASN / CIDR blocks)
+    # ------------------------------------------------------------------
+
+    def upsert_infrastructure(
+        self,
+        target: str,
+        cidr: str,
+        asn: str = "",
+        owner: str = "",
+    ) -> bool:
+        """Record a CIDR block associated with a target. Returns True if newly added."""
+        key = f"{target.lower().strip()}:{cidr}"
+        with self._lock:
+            if key not in self._state["infrastructure"]:
+                self._state["infrastructure"][key] = {
+                    "target":        target.lower().strip(),
+                    "cidr":          cidr,
+                    "asn":           asn,
+                    "owner":         owner,
+                    "discovered_at": _ts(),
+                    "last_seen":     _ts(),
+                }
+                _slog.info("NEW_INFRASTRUCTURE target=%s cidr=%s asn=%s", target, cidr, asn)
+                self._flush()
+                return True
+            else:
+                self._state["infrastructure"][key]["last_seen"] = _ts()
+                self._flush()
+                return False
+
+    def get_infrastructure(self, target: str) -> List[dict]:
+        """Return all CIDR records associated with a target."""
+        target = target.lower().strip()
+        with self._lock:
+            return [
+                v for v in self._state["infrastructure"].values()
+                if v["target"] == target
+            ]
+
+    # ------------------------------------------------------------------
     # Aggregate queries
     # ------------------------------------------------------------------
 
@@ -374,12 +414,13 @@ class ReconStateGraph:
         """Return entity counts and state file path."""
         with self._lock:
             return {
-                "targets":      len(self._state["targets"]),
-                "subdomains":   len(self._state["subdomains"]),
-                "services":     len(self._state["services"]),
-                "endpoints":    len(self._state["endpoints"]),
-                "technologies": len(self._state["technologies"]),
-                "state_file":   self._path,
+                "targets":        len(self._state["targets"]),
+                "subdomains":     len(self._state["subdomains"]),
+                "services":       len(self._state["services"]),
+                "endpoints":      len(self._state["endpoints"]),
+                "technologies":   len(self._state["technologies"]),
+                "infrastructure": len(self._state["infrastructure"]),
+                "state_file":     self._path,
             }
 
 
