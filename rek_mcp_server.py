@@ -243,6 +243,51 @@ TOOLS = [
         }
     },
     {
+        "name": "map_org_affiliations",
+        "description": (
+            "Map cross-organizational affiliations from a GitHub target (user or org) "
+            "and discover exposed API surfaces across affiliated repositories. "
+            "Phase 1 resolves the target entity via GitHub API, enumerates members, "
+            "and identifies bridge members — individuals active in the target org AND "
+            "external orgs — representing potential proxy/supply-chain exposure vectors. "
+            "Affiliated orgs are ranked by shared member count. "
+            "Phase 2 scans repos across the target and top affiliated orgs for API spec "
+            "files (OpenAPI/Swagger/.env/config), extracts endpoint lists, and searches "
+            "code for route definitions and credential pattern exposures. "
+            "Outputs: affiliations CSV, bridge members JSON, API findings CSV, and a flat "
+            "endpoints.txt feedable directly into check_http_status."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": "GitHub username or organization login to map"
+                },
+                "token": {
+                    "type": "string",
+                    "description": "GitHub Personal Access Token (required for code search; increases rate limits)"
+                },
+                "max_members": {
+                    "type": "integer",
+                    "description": "Max members to map for affiliation graph (default: 100)",
+                    "default": 100
+                },
+                "max_repos": {
+                    "type": "integer",
+                    "description": "Max repos to scan per org for API surface (default: 30)",
+                    "default": 30
+                },
+                "output_file": {
+                    "type": "string",
+                    "description": "Base path for output files (default: org_intel_results.csv)",
+                    "default": "org_intel_results.csv"
+                }
+            },
+            "required": ["target"]
+        }
+    },
+    {
         "name": "run_playbook",
         "description": (
             "Run ONE automated reconnaissance playbook against a target domain. "
@@ -459,6 +504,94 @@ async def tool_search_emails(args: dict) -> str:
     )
 
 
+async def tool_map_org_affiliations(args: dict) -> str:
+    from rek_org_intel import OrgIntelRunner
+
+    target      = args["target"]
+    output_file = args.get("output_file", "org_intel_results.csv")
+
+    runner = OrgIntelRunner(timeout=15, silent=True)
+
+    loop = asyncio.get_running_loop()
+    results = await loop.run_in_executor(
+        None,
+        lambda: runner.run(
+            target=target,
+            token=args.get("token"),
+            max_members=args.get("max_members", 100),
+            max_repos=args.get("max_repos", 30),
+            output_file=output_file,
+        )
+    )
+
+    entity          = results.get("entity", {})
+    bridge_members  = results.get("bridge_members", {})
+    affiliated_orgs = results.get("affiliated_orgs", [])
+    api_findings    = results.get("api_findings", [])
+
+    spec_files  = [f for f in api_findings if f["type"] == "api_spec_file"]
+    route_hits  = [f for f in api_findings if f["type"] == "route_definition"]
+    cred_hits   = [f for f in api_findings if f["type"] == "api_credential"]
+    all_endpoints = list({
+        ep
+        for f in spec_files
+        for ep in f.get("endpoints", [])
+    })
+
+    base = os.path.splitext(output_file)[0]
+
+    lines = [
+        f"Org intel complete for: {target}",
+        f"Entity type: {entity.get('type', 'unknown')}",
+        f"Public repos: {entity.get('public_repos', 'n/a')}",
+        "",
+        f"Affiliation mapping:",
+        f"  Members scanned:   {results.get('members_scanned', 0)}",
+        f"  Bridge members:    {len(bridge_members)}",
+        f"  Affiliated orgs:   {len(affiliated_orgs)}",
+        "",
+    ]
+
+    if affiliated_orgs:
+        lines.append("Top affiliated orgs (by shared member count):")
+        for a in affiliated_orgs[:10]:
+            lines.append(f"  {a['org']:30s}  {a['member_count']} shared member(s)")
+
+    if bridge_members:
+        lines.append("")
+        lines.append(f"Bridge members (pivot candidates):")
+        for member, orgs in list(bridge_members.items())[:10]:
+            lines.append(f"  {member:25s}  -> {', '.join(orgs[:5])}")
+
+    lines += [
+        "",
+        f"API surface discovery:",
+        f"  Spec files found:        {len(spec_files)}",
+        f"  Route definition hits:   {len(route_hits)}",
+        f"  Credential pattern hits: {len(cred_hits)}",
+        f"  Unique endpoints parsed: {len(all_endpoints)}",
+        "",
+    ]
+
+    if spec_files:
+        lines.append("API spec files:")
+        for f in spec_files[:15]:
+            ep_count = len(f.get("endpoints", []))
+            lines.append(f"  [{ep_count} endpoints] {f['org']}/{f['repo']} — {f['path']}")
+            lines.append(f"    {f['url']}")
+
+    lines += [
+        "",
+        f"Output files:",
+        f"  {base}_affiliations.csv",
+        f"  {base}_bridge_members.json",
+        f"  {base}_api_findings.csv",
+        f"  {base}_endpoints.txt  ({len(all_endpoints)} unique endpoints — feed into check_http_status)",
+    ]
+
+    return "\n".join(lines)
+
+
 async def tool_run_playbook(args: dict) -> str:
     domain = args["domain"]
     version = args.get("version", "v1")
@@ -510,11 +643,12 @@ async def tool_run_playbook(args: dict) -> str:
 # ---------------------------------------------------------------------------
 
 HANDLERS = {
-    "enumerate_subdomains": tool_enumerate_subdomains,
-    "check_http_status":    tool_check_http_status,
-    "scan_directories":     tool_scan_directories,
-    "search_emails":        tool_search_emails,
-    "run_playbook":         tool_run_playbook,
+    "enumerate_subdomains":  tool_enumerate_subdomains,
+    "check_http_status":     tool_check_http_status,
+    "scan_directories":      tool_scan_directories,
+    "search_emails":         tool_search_emails,
+    "map_org_affiliations":  tool_map_org_affiliations,
+    "run_playbook":          tool_run_playbook,
 }
 
 # ---------------------------------------------------------------------------
