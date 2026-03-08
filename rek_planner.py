@@ -206,6 +206,24 @@ class ReconPlanner:
                 )
                 continue
 
+            # Suppression gate — respect false-positive suppression decisions.
+            # suppressed/merged: never schedule.
+            # deferred: only schedule in non-standard modes (e.g. review or deep-recon).
+            sup_status = sub.get("suppression_status", "candidate")
+            if sup_status in ("suppressed", "merged"):
+                _plog.info(
+                    "TASK_SKIPPED suppression target=%s host=%s status=%s",
+                    target, host, sup_status,
+                )
+                continue
+            if sup_status == "deferred" and self.mode in ("standard", "passive_only"):
+                _plog.info(
+                    "TASK_SKIPPED suppression target=%s host=%s status=deferred "
+                    "(mode=%s requires review or immediate_execute to schedule deferred)",
+                    target, host, self.mode,
+                )
+                continue
+
             # Only schedule if no open ports known for this host
             if state_graph.get_open_ports(host):
                 continue

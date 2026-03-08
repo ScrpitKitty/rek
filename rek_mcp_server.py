@@ -844,6 +844,63 @@ TOOLS = [
             },
             "required": ["target"]
         }
+    },
+    {
+        "name": "run_false_positive_suppression",
+        "description": (
+            "Evaluate all discovered subdomains for a target and apply deterministic "
+            "suppression rules. Assets are marked as suppressed, deferred, active, or "
+            "verified in the state graph without being deleted. Suppressed assets are "
+            "excluded from normal scheduler queuing. Returns a summary with per-status "
+            "counts and a full audit log of status changes."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": "Target domain to evaluate (e.g., example.com)"
+                }
+            },
+            "required": ["target"]
+        }
+    },
+    {
+        "name": "list_suppressed_assets",
+        "description": (
+            "Return all suppressed, deferred, and merged subdomain assets for a "
+            "target along with their suppression reasons. Use this to review what "
+            "the suppression engine has excluded and decide if any need restoration."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": "Target domain to query (e.g., example.com)"
+                }
+            },
+            "required": ["target"]
+        }
+    },
+    {
+        "name": "restore_asset",
+        "description": (
+            "Restore a suppressed or deferred subdomain asset to candidate status, "
+            "making it eligible for normal scheduling again. The suppression decision "
+            "is preserved in logs but overridden in the state graph. Useful for "
+            "manually reviewing and reinstating assets that were incorrectly suppressed."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "asset": {
+                    "type": "string",
+                    "description": "FQDN of the asset to restore (e.g., sub.example.com)"
+                }
+            },
+            "required": ["asset"]
+        }
     }
 ]
 
@@ -1660,6 +1717,58 @@ async def tool_get_target_plan(args: dict) -> str:
     )
 
 
+async def tool_run_false_positive_suppression(args: dict) -> str:
+    t0 = time.time()
+    from rek_suppression import suppression_engine
+
+    target = args["target"]
+    loop   = asyncio.get_running_loop()
+    result = await loop.run_in_executor(
+        None, lambda: suppression_engine.run_suppression(target)
+    )
+
+    return _ok("run_false_positive_suppression", t0,
+        target=target,
+        summary=result["summary"],
+        audit=result["audit"],
+    )
+
+
+async def tool_list_suppressed_assets(args: dict) -> str:
+    t0 = time.time()
+    from rek_suppression import suppression_engine
+
+    target = args["target"]
+    result = suppression_engine.list_suppressed(target)
+
+    return _ok("list_suppressed_assets", t0,
+        target=target,
+        counts=result["counts"],
+        suppressed=result["suppressed"],
+        deferred=result["deferred"],
+        merged=result["merged"],
+    )
+
+
+async def tool_restore_asset(args: dict) -> str:
+    t0 = time.time()
+    from rek_suppression import suppression_engine
+
+    asset  = args["asset"]
+    result = suppression_engine.restore_asset(asset)
+
+    if result["restored"]:
+        return _ok("restore_asset", t0,
+            fqdn=result["fqdn"],
+            previous_status=result["previous_status"],
+            current_status="candidate",
+        )
+    return _err("restore_asset", t0,
+        result.get("error", "unknown error"),
+        fqdn=asset,
+    )
+
+
 HANDLERS = {
     "enumerate_subdomains":    tool_enumerate_subdomains,
     "check_http_status":       tool_check_http_status,
@@ -1678,9 +1787,12 @@ HANDLERS = {
     "expand_target":           tool_expand_target,
     "list_discovered_assets":  tool_list_discovered_assets,
     "schedule_target":         tool_schedule_target,
-    "run_scheduler":           tool_run_scheduler,
-    "get_scheduler_status":    tool_get_scheduler_status,
-    "get_target_plan":         tool_get_target_plan,
+    "run_scheduler":                    tool_run_scheduler,
+    "get_scheduler_status":             tool_get_scheduler_status,
+    "get_target_plan":                  tool_get_target_plan,
+    "run_false_positive_suppression":   tool_run_false_positive_suppression,
+    "list_suppressed_assets":           tool_list_suppressed_assets,
+    "restore_asset":                    tool_restore_asset,
 }
 
 # ---------------------------------------------------------------------------

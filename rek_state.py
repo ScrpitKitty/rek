@@ -174,17 +174,34 @@ class ReconStateGraph:
         with self._lock:
             if key not in self._state["subdomains"]:
                 self._state["subdomains"][key] = {
-                    "fqdn":          key,
-                    "parent_domain": parent_domain.lower().strip(),
-                    "source_tool":   source_tool,
-                    "discovered_at": _ts(),
-                    "last_seen":     _ts(),
+                    "fqdn":                  key,
+                    "parent_domain":         parent_domain.lower().strip(),
+                    "source_tool":           source_tool,
+                    "discovered_at":         _ts(),
+                    "last_seen":             _ts(),
+                    # Suppression tracking fields
+                    "suppression_status":    "candidate",
+                    "suppression_reason":    None,
+                    "confidence_score":      0,
+                    "source_list":           [source_tool] if source_tool else [],
+                    "times_seen":            1,
+                    "resolution_failures":   0,
+                    "last_resolution_status": "unknown",
+                    "canonical_asset_id":    None,
                 }
                 _slog.info("NEW_SUBDOMAIN fqdn=%s source=%s", key, source_tool)
                 self._flush()
                 return True
             else:
-                self._state["subdomains"][key]["last_seen"] = _ts()
+                rec = self._state["subdomains"][key]
+                rec["last_seen"] = _ts()
+                rec["times_seen"] = rec.get("times_seen", 1) + 1
+                # Accumulate source_list (back-fill from source_tool if needed)
+                src_list = rec.setdefault(
+                    "source_list", [rec.get("source_tool", "unknown")]
+                )
+                if source_tool and source_tool not in src_list:
+                    src_list.append(source_tool)
                 self._flush()
                 return False
 
@@ -202,6 +219,76 @@ class ReconStateGraph:
         """Return candidates not yet present in the state graph."""
         known = set(self.get_known_subdomains(target))
         return [s for s in candidates if s.lower().strip() not in known]
+
+    def get_subdomain(self, fqdn: str) -> Optional[dict]:
+        """Return the subdomain record for fqdn, or None if not found."""
+        key = fqdn.lower().strip()
+        with self._lock:
+            return self._state["subdomains"].get(key)
+
+    def update_suppression(
+        self,
+        fqdn: str,
+        status: str,
+        reason: Optional[str],
+        confidence_score: int = 0,
+        canonical_asset_id: Optional[str] = None,
+    ) -> bool:
+        """
+        Update suppression fields on a subdomain record in-place.
+        The record is never deleted. Returns True if the record was found.
+        """
+        key = fqdn.lower().strip()
+        with self._lock:
+            rec = self._state["subdomains"].get(key)
+            if rec is None:
+                return False
+            rec["suppression_status"]  = status
+            rec["suppression_reason"]  = reason
+            rec["confidence_score"]    = confidence_score
+            if canonical_asset_id is not None:
+                rec["canonical_asset_id"] = canonical_asset_id
+            self._flush()
+        return True
+
+    def increment_resolution_failure(self, fqdn: str) -> bool:
+        """
+        Increment resolution_failures counter and update last_resolution_status.
+        Returns True if the record was found.
+        """
+        key = fqdn.lower().strip()
+        with self._lock:
+            rec = self._state["subdomains"].get(key)
+            if rec is None:
+                return False
+            rec["resolution_failures"]    = rec.get("resolution_failures", 0) + 1
+            rec["last_resolution_status"] = "failure"
+            self._flush()
+        return True
+
+    def get_subdomains_by_suppression_status(
+        self, target: str, status: str
+    ) -> List[dict]:
+        """Return all subdomain records for target with the given suppression_status."""
+        target = target.lower().strip()
+        with self._lock:
+            return [
+                v for v in self._state["subdomains"].values()
+                if v["parent_domain"] == target
+                and v.get("suppression_status", "candidate") == status
+            ]
+
+    def get_suppression_summary(self, target: str) -> dict:
+        """Return counts of subdomains per suppression_status for target."""
+        target = target.lower().strip()
+        counts: Dict[str, int] = {}
+        with self._lock:
+            for v in self._state["subdomains"].values():
+                if v["parent_domain"] != target:
+                    continue
+                st = v.get("suppression_status", "candidate")
+                counts[st] = counts.get(st, 0) + 1
+        return counts
 
     # ------------------------------------------------------------------
     # Services
