@@ -7,7 +7,7 @@ REK is a comprehensive reconnaissance toolkit designed for ethical hackers and b
 
 **Authors:** Jayresearcher, NarutoX, Ninja, N00B-LMS
 
-## 🚀 Automated Playbook System
+## 🚀 Automated Playbook System 
 
 ### Core Playbook Features
 The REK toolkit includes two main automated reconnaissance playbooks:
