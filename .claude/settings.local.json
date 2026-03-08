@@ -4,7 +4,9 @@
       "Bash(python:*)",
       "Bash(powershell:*)",
       "Bash(curl:*)",
-      "Bash(C:/Python313/python.exe:*)"
+      "Bash(C:/Python313/python.exe:*)",
+      "Bash(grep:*)",
+      "Bash(grep \"\"name\"\"::*)"
     ]
   }
 }
