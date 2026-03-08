@@ -402,6 +402,107 @@ python3 rek.py -d example.com \
   -t 15 -c 100 --limit-commits 50
 ```
 
+## Scope Compliance & Responsible Operation
+
+This project includes deterministic scope enforcement to ensure that reconnaissance activity remains strictly within the intended target boundaries.
+
+### Why This Exists
+
+As the `rek` fork evolves from a semi-automated utility into a more structured recon orchestration engine (playbooks, automation pipelines, etc.), it becomes increasingly important to prevent accidental scanning of infrastructure that does not belong to the intended target.
+
+Examples of unintended expansion include:
+
+* CDN providers (Cloudflare, Akamai, Fastly)
+* Cloud infrastructure (AWS, Azure, GCP)
+* Vendor-owned assets discovered through passive DNS
+* Third-party integrations or dependencies
+
+Automated tooling can discover these assets naturally during enumeration. However, **discovery does not imply authorization to interact with them.**
+
+### Enforcement Model
+
+The system follows a strict execution pipeline:
+
+```
+discovery
+↓
+normalization
+↓
+asset tracking
+↓
+scope validation   ← enforcement point
+↓
+suppression engine
+↓
+scheduler
+↓
+tool execution
+```
+
+Before **any scan or recon tool executes**, the target must pass deterministic scope validation.
+
+### Scope Guard
+
+A dedicated `scope_guard` module performs validation against a configured scope definition.
+
+Assets that do not match the allowed scope are:
+
+* logged
+* tagged as `out_of_scope`
+* **never scanned or interacted with**
+
+Example logic:
+
+```python
+if not in_scope(asset):
+    log_event(asset, status="out_of_scope")
+    return
+```
+
+### Key Principles
+
+This project follows several operational principles:
+
+* **Observe widely, act narrowly**
+* **Automation must never override scope boundaries**
+* **LLM reasoning cannot authorize execution**
+* **All execution authority is enforced by deterministic code**
+
+### Configuration
+
+Scope is defined using explicit allow-lists such as:
+
+* allowed domains
+* subdomain suffix rules
+* authorized IP ranges
+
+Example:
+
+```yaml
+allowed_domains:
+  - example.com
+  - api.example.com
+
+allowed_domain_suffixes:
+  - ".example.com"
+
+allowed_ip_ranges:
+  - "192.0.2.0/24"
+```
+
+### Responsible Use
+
+This project is intended for:
+
+* bug bounty research
+* authorized security testing
+* reconnaissance within approved program scopes
+
+Users are responsible for ensuring they have permission to interact with any target system.
+
+Automation features exist to **assist authorized research**, not to bypass scope restrictions.
+
+
 #### 2. HTTP Status Checking
 ```bash
 # Check HTTP status for discovered subdomains
