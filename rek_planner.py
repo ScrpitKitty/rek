@@ -381,6 +381,19 @@ class ReconPlanner:
 
         target = target.lower().strip()
 
+        # Domain gate: root domain must be approved before any tasks are planned.
+        from rek_domain_gate import domain_gate
+        gate_allowed = domain_gate.domain_safety_gate(
+            target, discovered_from="planner", discovery_method="plan_target"
+        )
+        if not gate_allowed:
+            gate_status = domain_gate.get_status(target)
+            _plog.info(
+                "PLAN_REJECTED target=%s reason=domain_gate root=%s status=%s",
+                target, gate_status.get("root", target), gate_status.get("status", "pending"),
+            )
+            return []
+
         # Rule 6: root-level scope enforcement
         if self.scope_roots and not self._in_scope(target):
             _plog.info("PLAN_REJECTED target=%s reason=out_of_scope", target)

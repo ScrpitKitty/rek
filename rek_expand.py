@@ -338,8 +338,33 @@ class TargetExpansionEngine:
         _elog.info("EXPAND_ALL_STARTED target=%s sources=%s", target, sources_lower)
         t0 = time.time()
 
-        # Ensure target is registered
+        # Ensure target is registered (also auto-approves it in the domain gate)
         state_graph.upsert_target(target)
+
+        # Domain gate: confirm root domain is approved before issuing any queries.
+        from rek_domain_gate import domain_gate
+        gate_allowed = domain_gate.domain_safety_gate(
+            target, discovered_from="expand_all", discovery_method="passive_expansion"
+        )
+        if not gate_allowed:
+            gate_status = domain_gate.get_status(target)
+            _elog.info(
+                "EXPAND_GATE_BLOCKED target=%s root=%s status=%s",
+                target, gate_status.get("root", target), gate_status.get("status", "pending"),
+            )
+            return {
+                "target":                 target,
+                "sources_run":            [],
+                "new_subdomains":         0,
+                "new_infra_cidrs":        0,
+                "per_source":             {},
+                "execution_time_seconds": round(time.time() - t0, 3),
+                "error": (
+                    f"domain_gate_blocked: root domain '{gate_status.get('root', target)}' "
+                    f"is {gate_status.get('status', 'pending')}. "
+                    "Use approve_domain to allow expansion."
+                ),
+            }
 
         summary: Dict[str, int] = {s: 0 for s in sources_lower}
         new_subdomains = 0

@@ -75,11 +75,41 @@ def _execute_task(task: dict) -> dict:
     host   = task.get("host", target)
 
     # ------------------------------------------------------------------
+    # Domain safety gate — block active recon against unapproved root
+    # domains. Must run BEFORE the scope gate per pipeline order:
+    #   domain_safety_gate → scope_guard → execution
+    # Passive tools (expand_target, analyze_target) are exempt.
+    # ------------------------------------------------------------------
+    _ACTIVE_TOOLS = frozenset({"run_port_scan", "run_endpoint_scan"})
+    if tool in _ACTIVE_TOOLS:
+        from rek_domain_gate import domain_gate
+        gate_allowed = domain_gate.domain_safety_gate(
+            host,
+            discovered_from=task.get("target", ""),
+            discovery_method="scheduled_task",
+        )
+        if not gate_allowed:
+            gate_status = domain_gate.get_status(host)
+            _schlog.info(
+                "DOMAIN_GATE_BLOCKED_EXECUTION task_id=%s host=%s "
+                "root=%s status=%s action=blocked",
+                task["task_id"], host,
+                gate_status.get("root", "?"), gate_status.get("status", "?"),
+            )
+            return {
+                "success": False,
+                "output":  "",
+                "error":   (
+                    f"domain_gate_blocked: {host} — root domain "
+                    f"{gate_status.get('root', '?')} is {gate_status.get('status', 'pending')}"
+                ),
+            }
+
+    # ------------------------------------------------------------------
     # Scope gate — block active recon against out-of-scope assets.
     # Passive tools (expand_target, analyze_target) are exempt because
     # they query third-party databases, not the target infrastructure.
     # ------------------------------------------------------------------
-    _ACTIVE_TOOLS = frozenset({"run_port_scan", "run_endpoint_scan"})
     if tool in _ACTIVE_TOOLS:
         from rek_scope import scope_guard
         scope_result = scope_guard.in_scope(host)

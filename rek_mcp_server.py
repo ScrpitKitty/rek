@@ -175,6 +175,37 @@ def _err(tool: str, start: float, message: str, **fields) -> str:
     }, indent=2)
 
 
+def _domain_gate_check(asset: str, tool: str, start: float) -> Optional[str]:
+    """
+    Domain approval gate for MCP tool handlers.
+
+    Consults the domain safety gate before any active tool invocation.
+    Returns a ready-to-return _err() JSON string if the asset's root domain
+    has not been approved, or None if the asset is allowed.
+
+    This check runs BEFORE the scope gate. LLM reasoning must never bypass it.
+    """
+    from rek_domain_gate import domain_gate
+    allowed = domain_gate.domain_safety_gate(
+        asset, discovered_from="mcp_tool", discovery_method="mcp_invocation"
+    )
+    if not allowed:
+        status = domain_gate.get_status(asset)
+        _log.info(
+            "DOMAIN_GATE_BLOCKED_MCP tool=%s asset=%s root=%s status=%s action=blocked",
+            tool, asset, status.get("root", "?"), status.get("status", "pending"),
+        )
+        return _err(
+            tool, start,
+            f"domain_gate_blocked: {asset} — root domain '{status.get('root', '?')}' "
+            f"is {status.get('status', 'pending')}. Use approve_domain to allow scanning.",
+            asset=asset,
+            root_domain=status.get("root"),
+            gate_status=status.get("status"),
+        )
+    return None
+
+
 def _scope_check(asset: str, tool: str, start: float) -> Optional[str]:
     """
     Scope gate for MCP tool handlers.
@@ -963,6 +994,55 @@ TOOLS = [
             "properties": {},
             "required": []
         }
+    },
+    {
+        "name": "get_pending_domains",
+        "description": (
+            "List all root domains awaiting approval before active scanning can proceed. "
+            "Returns pending, approved, and rejected domain lists with metadata. "
+            "Use approve_domain or reject_domain to act on pending entries."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    },
+    {
+        "name": "approve_domain",
+        "description": (
+            "Approve a root domain for active scanning. Once approved, the domain "
+            "safety gate will allow port scans and endpoint scans against any host "
+            "within that root domain. Requires explicit human confirmation before use."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "domain": {
+                    "type": "string",
+                    "description": "Root domain to approve for active scanning (e.g. example.com)"
+                }
+            },
+            "required": ["domain"]
+        }
+    },
+    {
+        "name": "reject_domain",
+        "description": (
+            "Reject a root domain, permanently blocking active scanning against any "
+            "host within it. Rejected domains will not be promoted to approved even "
+            "if they appear as recon targets."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "domain": {
+                    "type": "string",
+                    "description": "Root domain to reject (e.g. example.com)"
+                }
+            },
+            "required": ["domain"]
+        }
     }
 ]
 
@@ -975,6 +1055,10 @@ async def tool_enumerate_subdomains(args: dict) -> str:
     from rek import SubdomainScanner
 
     domain = args["domain"]
+
+    blocked = _domain_gate_check(domain, "enumerate_subdomains", t0)
+    if blocked:
+        return blocked
 
     blocked = _scope_check(domain, "enumerate_subdomains", t0)
     if blocked:
@@ -1058,8 +1142,11 @@ async def tool_scan_directories(args: dict) -> str:
     input_file = args.get("input_file")
     url = args.get("url")
 
-    # Scope gate: check the explicitly supplied URL before any scan begins.
+    # Domain gate + scope gate: check the explicitly supplied URL before any scan begins.
     if url:
+        blocked = _domain_gate_check(url, "scan_directories", t0)
+        if blocked:
+            return blocked
         blocked = _scope_check(url, "scan_directories", t0)
         if blocked:
             return blocked
@@ -1327,8 +1414,11 @@ async def tool_run_port_scan(args: dict) -> str:
     if hosts_file and not os.path.exists(hosts_file):
         return _err("run_port_scan", t0, f"hosts_file not found: {hosts_file}")
 
-    # Scope gate: check explicit host before issuing any TCP connections.
+    # Domain gate + scope gate: check explicit host before issuing any TCP connections.
     if host:
+        blocked = _domain_gate_check(host, "run_port_scan", t0)
+        if blocked:
+            return blocked
         blocked = _scope_check(host, "run_port_scan", t0)
         if blocked:
             return blocked
@@ -1408,8 +1498,11 @@ async def tool_run_endpoint_scan(args: dict) -> str:
     if urls_file and not os.path.exists(urls_file):
         return _err("run_endpoint_scan", t0, f"urls_file not found: {urls_file}")
 
-    # Scope gate: check explicit URL target before issuing any HTTP crawl.
+    # Domain gate + scope gate: check explicit URL target before issuing any HTTP crawl.
     if url:
+        blocked = _domain_gate_check(url, "run_endpoint_scan", t0)
+        if blocked:
+            return blocked
         blocked = _scope_check(url, "run_endpoint_scan", t0)
         if blocked:
             return blocked
@@ -1854,6 +1947,59 @@ async def tool_restore_asset(args: dict) -> str:
     )
 
 
+async def tool_get_pending_domains(args: dict) -> str:
+    t0 = time.time()
+    from rek_domain_gate import domain_gate
+
+    summary  = domain_gate.get_summary()
+    pending  = domain_gate.list_pending()
+    approved = domain_gate.list_approved()
+    rejected = domain_gate.list_rejected()
+
+    return _ok("get_pending_domains", t0,
+        summary=summary,
+        pending=pending,
+        approved=approved,
+        rejected=rejected,
+    )
+
+
+async def tool_approve_domain(args: dict) -> str:
+    t0 = time.time()
+    from rek_domain_gate import domain_gate
+
+    domain = args["domain"].strip().lower()
+    result = domain_gate.approve_domain(domain)
+
+    if result.get("approved"):
+        return _ok("approve_domain", t0,
+            domain=result["domain"],
+            status="approved",
+        )
+    return _err("approve_domain", t0,
+        result.get("error", "unknown error"),
+        domain=domain,
+    )
+
+
+async def tool_reject_domain(args: dict) -> str:
+    t0 = time.time()
+    from rek_domain_gate import domain_gate
+
+    domain = args["domain"].strip().lower()
+    result = domain_gate.reject_domain(domain)
+
+    if result.get("rejected"):
+        return _ok("reject_domain", t0,
+            domain=result["domain"],
+            status="rejected",
+        )
+    return _err("reject_domain", t0,
+        result.get("error", "unknown error"),
+        domain=domain,
+    )
+
+
 async def tool_check_scope(args: dict) -> str:
     t0 = time.time()
     from rek_scope import scope_guard
@@ -1906,6 +2052,9 @@ HANDLERS = {
     "restore_asset":                    tool_restore_asset,
     "check_scope":                      tool_check_scope,
     "get_scope_config":                 tool_get_scope_config,
+    "get_pending_domains":              tool_get_pending_domains,
+    "approve_domain":                   tool_approve_domain,
+    "reject_domain":                    tool_reject_domain,
 }
 
 # ---------------------------------------------------------------------------
