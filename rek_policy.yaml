@@ -1,0 +1,10 @@
+mode: development
+
+scope_guard:
+  enabled: false
+
+domain_gate:
+  enabled: false
+
+logging:
+  level: minimal

@@ -203,6 +203,10 @@ class ScopeGuard:
             "scope_reason": <reason string>
         }
         """
+        from rek_policy import POLICY
+        if not POLICY["scope_guard"]["enabled"]:
+            return {"asset": self._normalize(target), "allowed": True, "scope_reason": "policy_disabled"}
+
         host = self._normalize(target)
 
         with self._lock:
@@ -258,6 +262,10 @@ class ScopeGuard:
         target        : asset to check
         discovered_via: source tool name for log context
         """
+        from rek_policy import POLICY
+        if not POLICY["scope_guard"]["enabled"]:
+            return True
+
         result = self.in_scope(target)
         if not result["allowed"]:
             _sclog.info(

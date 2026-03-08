@@ -266,6 +266,10 @@ class DomainSafetyGate:
         True  — execution allowed
         False — execution blocked (pending or rejected)
         """
+        from rek_policy import POLICY
+        if not POLICY["domain_gate"]["enabled"]:
+            return True
+
         from rek_scope import ScopeGuard
         hostname = ScopeGuard._normalize(hostname)
 

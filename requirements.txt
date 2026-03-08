@@ -12,6 +12,7 @@ urllib3==2.5.0
 numpy==1.26.4
 tqdm==4.66.5
 tldextract
+pyyaml
 # HTTP transport (optional — only needed for --http mode)
 fastapi>=0.111.0
 uvicorn[standard]>=0.29.0
