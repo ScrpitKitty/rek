@@ -74,6 +74,26 @@ def _execute_task(task: dict) -> dict:
     target = task["target"]
     host   = task.get("host", target)
 
+    # ------------------------------------------------------------------
+    # Scope gate — block active recon against out-of-scope assets.
+    # Passive tools (expand_target, analyze_target) are exempt because
+    # they query third-party databases, not the target infrastructure.
+    # ------------------------------------------------------------------
+    _ACTIVE_TOOLS = frozenset({"run_port_scan", "run_endpoint_scan"})
+    if tool in _ACTIVE_TOOLS:
+        from rek_scope import scope_guard
+        scope_result = scope_guard.in_scope(host)
+        if not scope_result["allowed"]:
+            _schlog.info(
+                "SCOPE_BLOCKED_EXECUTION task_id=%s host=%s reason=%s action=blocked",
+                task["task_id"], host, scope_result["scope_reason"],
+            )
+            return {
+                "success": False,
+                "output":  "",
+                "error":   f"out_of_scope: {host} ({scope_result['scope_reason']})",
+            }
+
     try:
         # ---- Passive expansion -------------------------------------------
         if tool == "expand_target":

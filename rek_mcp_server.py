@@ -30,7 +30,7 @@ import uuid
 import functools
 import time
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 
 # Suppress all warnings so they don't corrupt StdIO JSON stream
 import warnings
@@ -173,6 +173,34 @@ def _err(tool: str, start: float, message: str, **fields) -> str:
         "error": message,
         **fields,
     }, indent=2)
+
+
+def _scope_check(asset: str, tool: str, start: float) -> Optional[str]:
+    """
+    Scope gate for MCP tool handlers.
+
+    Consults the file-based scope guard before any active tool invocation.
+    Returns a ready-to-return _err() JSON string if the asset is out of
+    scope, or None if the asset is allowed.
+
+    This function must be called at the top of every active scan handler.
+    LLM reasoning must never bypass this check.
+    """
+    from rek_scope import scope_guard
+    result = scope_guard.in_scope(asset)
+    if not result["allowed"]:
+        import logging
+        logging.getLogger("rek_mcp_server").info(
+            "SCOPE_BLOCKED_MCP tool=%s asset=%s reason=%s action=blocked",
+            tool, result["asset"], result["scope_reason"],
+        )
+        return _err(
+            tool, start,
+            f"out_of_scope: {result['asset']} — {result['scope_reason']}",
+            asset=result["asset"],
+            scope_reason=result["scope_reason"],
+        )
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -901,6 +929,40 @@ TOOLS = [
             },
             "required": ["asset"]
         }
+    },
+    {
+        "name": "check_scope",
+        "description": (
+            "Check whether one or more assets (domains, subdomains, URLs, or IP "
+            "addresses) fall within the declared recon scope configured in "
+            "state/scope.json. Returns allowed status and scope reason for each "
+            "asset. Out-of-scope assets are always blocked from active tool "
+            "invocation — this tool lets you verify scope before running scans."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "assets": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of assets to check (domains, URLs, IPs)"
+                }
+            },
+            "required": ["assets"]
+        }
+    },
+    {
+        "name": "get_scope_config",
+        "description": (
+            "Return the current scope configuration: allowed domains, allowed "
+            "suffixes, allowed IP ranges, excluded domains, and whether strict "
+            "mode is enabled. Reflects the live state of state/scope.json."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
     }
 ]
 
@@ -913,6 +975,11 @@ async def tool_enumerate_subdomains(args: dict) -> str:
     from rek import SubdomainScanner
 
     domain = args["domain"]
+
+    blocked = _scope_check(domain, "enumerate_subdomains", t0)
+    if blocked:
+        return blocked
+
     output_file = args.get("output_file") or f"{domain}_results.txt"
 
     scanner = SubdomainScanner(
@@ -988,15 +1055,21 @@ async def tool_scan_directories(args: dict) -> str:
     t0 = time.time()
     from rek import DirectoryScanner
 
+    input_file = args.get("input_file")
+    url = args.get("url")
+
+    # Scope gate: check the explicitly supplied URL before any scan begins.
+    if url:
+        blocked = _scope_check(url, "scan_directories", t0)
+        if blocked:
+            return blocked
+
     scanner = DirectoryScanner(
         timeout=args.get("timeout", 10),
         max_concurrent=args.get("concurrency", 50),
         max_depth=args.get("depth", 5),
         silent=True
     )
-
-    input_file = args.get("input_file")
-    url = args.get("url")
     dir_wordlist = args.get("dir_wordlist")
     status_codes = None
     if args.get("status_codes"):
@@ -1254,6 +1327,12 @@ async def tool_run_port_scan(args: dict) -> str:
     if hosts_file and not os.path.exists(hosts_file):
         return _err("run_port_scan", t0, f"hosts_file not found: {hosts_file}")
 
+    # Scope gate: check explicit host before issuing any TCP connections.
+    if host:
+        blocked = _scope_check(host, "run_port_scan", t0)
+        if blocked:
+            return blocked
+
     cmd = [
         "naabu",
         "-p", ports,
@@ -1328,6 +1407,12 @@ async def tool_run_endpoint_scan(args: dict) -> str:
         return _err("run_endpoint_scan", t0, "Must provide either url or urls_file")
     if urls_file and not os.path.exists(urls_file):
         return _err("run_endpoint_scan", t0, f"urls_file not found: {urls_file}")
+
+    # Scope gate: check explicit URL target before issuing any HTTP crawl.
+    if url:
+        blocked = _scope_check(url, "run_endpoint_scan", t0)
+        if blocked:
+            return blocked
 
     if scanner == "katana":
         cmd = [
@@ -1769,6 +1854,32 @@ async def tool_restore_asset(args: dict) -> str:
     )
 
 
+async def tool_check_scope(args: dict) -> str:
+    t0 = time.time()
+    from rek_scope import scope_guard
+
+    assets  = args.get("assets", [])
+    results = [scope_guard.in_scope(a) for a in assets]
+
+    blocked = [r for r in results if not r["allowed"]]
+    allowed = [r for r in results if r["allowed"]]
+
+    return _ok("check_scope", t0,
+        total=len(results),
+        allowed_count=len(allowed),
+        blocked_count=len(blocked),
+        results=results,
+    )
+
+
+async def tool_get_scope_config(args: dict) -> str:
+    t0 = time.time()
+    from rek_scope import scope_guard
+
+    cfg = scope_guard.get_config()
+    return _ok("get_scope_config", t0, **cfg)
+
+
 HANDLERS = {
     "enumerate_subdomains":    tool_enumerate_subdomains,
     "check_http_status":       tool_check_http_status,
@@ -1793,6 +1904,8 @@ HANDLERS = {
     "run_false_positive_suppression":   tool_run_false_positive_suppression,
     "list_suppressed_assets":           tool_list_suppressed_assets,
     "restore_asset":                    tool_restore_asset,
+    "check_scope":                      tool_check_scope,
+    "get_scope_config":                 tool_get_scope_config,
 }
 
 # ---------------------------------------------------------------------------
