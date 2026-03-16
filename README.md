@@ -63,6 +63,88 @@ chmod +x playbook/install-script.sh
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
+│                         REK MCP SERVER ARCHITECTURE                             │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                              MCP INTERFACE                                      │
+│                    STDIO transport — Claude Desktop (Windows)                   │
+└───────────────────────────────────────┬─────────────────────────────────────────┘
+                                        │
+                                        ▼
+                    ┌───────────────────────────────────────┐
+                    │             SCOPE GUARD               │
+                    │   Is this asset in scope?             │
+                    │   File-based scope enforcement        │
+                    └───────────────────┬───────────────────┘
+                                        │
+                                        ▼
+                    ┌───────────────────────────────────────┐
+                    │             DOMAIN GATE               │
+                    │   Is this domain approved for         │
+                    │   active probing?                     │
+                    └───────────────────┬───────────────────┘
+                                        │
+                                        │
+┌───────────────────────────────────────▼─────────────────────────────────────────┐
+│                              STATE GRAPH                                        │
+│         Persistent intelligence store — survives across sessions                │
+│                                                                                 │
+│         targets · subdomains · services · endpoints · technologies              │
+└─────────────────────────────────────────────────────────────────────────────────┘
+         │                         │                         │
+         ▼                         ▼                         ▼
+┌─────────────────┐   ┌────────────────────┐   ┌───────────────────────┐
+│  ACTIVE RECON   │   │   INTELLIGENCE     │   │     GOVERNANCE        │
+│                 │   │                    │   │                       │
+│ enumerate_      │   │ expand_target      │   │ suppression + restore │
+│   subdomains    │   │ search_emails      │   │ asset_validation      │
+│ run_port_scan   │   │ map_org_           │   │ policy engine         │
+│ run_endpoint_   │   │   affiliations     │   │ check_scope           │
+│   scan          │   │ source_trust       │   │ approve_domain        │
+│ check_http_     │   │ org_intel          │   │ reject_domain         │
+│   status        │   │                    │   │                       │
+│ scan_dirs       │   │                    │   │                       │
+└────────┬────────┘   └────────────┬───────┘   └─────────────┬─────────┘
+         │                         │                         │
+         └─────────────────────────┼─────────────────────────┘
+                                   │
+                        ┌──────────▼───────────┐
+                        │  writes back to      │
+                        │  STATE GRAPH after   │
+                        │  every tool result   │
+                        └──────────┬───────────┘
+                                   │               
+                    ┌──────────────┴──────────────┐
+                    │                             │
+         ┌──────────▼──────────┐         ┌────────▼───────┐
+         │      SCHEDULER      │         │    PLANNER     │
+         │                     │         │                │
+         │ task queue          │         │  prioritized   │
+         │ scheduler state     │         │    findings    │
+         │ incremental recon   │         │  top targets   │
+         │ run_scheduler       │         │  target plan   │
+         └─────────┬───────────┘         └────────┬───────┘
+                   │                              │
+                   └───────────────┬──────────────┘
+                                   │
+┌──────────────────────────────────▼────────────────────────────────────────────┐
+│                           PLAYBOOK ENGINE                                     │
+│                                                                               │
+│   v1 advanced · v2 crawler · v3 passive · v4 API · v5 cloud · v6 validation   │
+│                          · standard baseline ·                                │
+└──────────────────────────────────┬────────────────────────────────────────────┘
+                                   │
+┌──────────────────────────────────▼────────────────────────────────────────────┐
+│                         BASH + EXTERNAL TOOLS                                 │
+│                                                                               │
+│  subfinder · assetfinder · findomain · httpx · naabu · puredns · katana       │
+│        gau · gospider · gf · nuclei · getjs · cariddi · dnsx                  │
+└───────────────────────────────────────────────────────────────────────────────┘
+```
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
 │                         REK PLAYBOOK SYSTEM ARCHITECTURE                        │
 └─────────────────────────────────────────────────────────────────────────────────┘
 
@@ -80,25 +162,25 @@ chmod +x playbook/install-script.sh
          ┌───────────────────────▼───────────────────────▼───────────────────────┐
          │                    CORE PLAYBOOK ENGINE                               │
          │                                                                       │
-         │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐      │
-         │  │   Phase 1-2     │  │   Phase 3-4     │  │   Phase 5-8     │      │
-         │  │   Subdomain     │  │  Live Detection │  │   Content &     │      │
-         │  │   Discovery     │  │  & Port Scan    │  │  Vulnerability  │      │
-         │  └─────────────────┘  └─────────────────┘  └─────────────────┘      │
+         │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐        │
+         │  │   Phase 1-2     │  │   Phase 3-4     │  │   Phase 5-8     │        │
+         │  │   Subdomain     │  │  Live Detection │  │   Content &     │        │
+         │  │   Discovery     │  │  & Port Scan    │  │  Vulnerability  │        │
+         │  └─────────────────┘  └─────────────────┘  └─────────────────┘        │
          └───────────────────────────────────────────────────────────────────────┘
                                         │
          ┌──────────────────────────────▼──────────────────────────────────────┐
          │                    EXTERNAL TOOL INTEGRATIONS                       │
          │                                                                     │
-         │  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐  │
-         │  │ Subdomain   │ │ HTTP/Port   │ │ Content     │ │ Analysis    │  │
-         │  │ Tools       │ │ Scanners    │ │ Discovery   │ │ Tools       │  │
-         │  │             │ │             │ │             │ │             │  │
-         │  │ • Subfinder │ │ • HTTPx     │ │ • Gospider  │ │ • GF        │  │
-         │  │ • Assetfind │ │ • Naabu     │ │ • Katana    │ │ • Cariddi   │  │
-         │  │ • Findomain │ │ • Puredns   │ │ • GAU       │ │ • GetJS     │  │
-         │  │ • Chaos     │ │             │ │             │ │             │  │
-         │  └─────────────┘ └─────────────┘ └─────────────┘ └─────────────┘  │
+         │  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐    │
+         │  │ Subdomain   │ │ HTTP/Port   │ │ Content     │ │ Analysis    │    │
+         │  │ Tools       │ │ Scanners    │ │ Discovery   │ │ Tools       │    │
+         │  │             │ │             │ │             │ │             │    │
+         │  │ • Subfinder │ │ • HTTPx     │ │ • Gospider  │ │ • GF        │    │
+         │  │ • Assetfind │ │ • Naabu     │ │ • Katana    │ │ • Cariddi   │    │
+         │  │ • Findomain │ │ • Puredns   │ │ • GAU       │ │ • GetJS     │    │
+         │  │ • Chaos     │ │             │ │             │ │             │    │
+         │  └─────────────┘ └─────────────┘ └─────────────┘ └─────────────┘    │
          └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -110,7 +192,7 @@ chmod +x playbook/install-script.sh
 └───────────────────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────┐   ┌─────────────┐   ┌─────────────┐   ┌─────────────┐   ┌─────────────┐
-│   PHASE 1   │──▶│   PHASE 2   │──▶│   PHASE 3   │──▶│   PHASE 4   │──▶│   PHASE 5   │
+│   PHASE 1   │──▶│  PHASE 2    │──▶│  PHASE 3   │──▶│  PHASE 4  │──▶│   PHASE 5   │
 │  Subdomain  │   │  Subdomain  │   │    Live     │   │    Port     │   │  Content    │
 │ Enumeration │   │ Permutation │   │ Detection   │   │  Scanning   │   │ Discovery   │
 └─────────────┘   └─────────────┘   └─────────────┘   └─────────────┘   └─────────────┘
@@ -125,12 +207,12 @@ chmod +x playbook/install-script.sh
 │• GitLab API │   │• Resolve    │   │• Status     │   │  Probe      │   │• JS Files   │
 └─────────────┘   └─────────────┘   └─────────────┘   └─────────────┘   └─────────────┘
 
-         │                                                                        │
-         ▼                                                                        ▼
+         │                                                                      │
+         ▼                                                                      ▼
 ┌─────────────┐   ┌─────────────┐   ┌─────────────┐   ┌─────────────┐   ┌─────────────┐
-│   PHASE 6   │──▶│   PHASE 7   │──▶│   PHASE 8   │──▶│  REPORTING  │──▶│   CLEANUP   │
-│Vulnerability│   │  Endpoint   │   │ JavaScript  │   │  & Summary  │   │& Archival   │
-│  Analysis   │   │Categorization│   │  Analysis   │   │  Generation │   │             │
+│   PHASE 6   │──▶│   PHASE 7  │──▶│   PHASE 8   │──▶│  REPORTING │──▶│   CLEANUP   │
+│Vulnerability│   │  Endpoint   │   │ JavaScript  │   │  & Summary  │   │      &      │
+│  Analysis   │   │  Category   │   │  Analysis   │   │  Generation │   │   Archival  │
 └─────────────┘   └─────────────┘   └─────────────┘   └─────────────┘   └─────────────┘
        │                 │                 │                 │                 │
        ▼                 ▼                 ▼                 ▼                 ▼
@@ -153,7 +235,7 @@ chmod +x playbook/install-script.sh
 
     INPUT                 PROCESSING                      OUTPUT
 ┌─────────────┐     ┌─────────────────────────┐     ┌─────────────────────┐
-│   Domain    │────▶│    Subdomain Tools      │────▶│  Raw Subdomains     │
+│   Domain    │────▶│    Subdomain Tools     │────▶│  Raw Subdomains     │
 │ example.com │     │                         │     │                     │
 └─────────────┘     │ ┌─────────────────────┐ │     │ • subfinder.txt     │
                     │ │   Subfinder         │ │     │ • assetfinder.txt   │
@@ -166,7 +248,7 @@ chmod +x playbook/install-script.sh
                     │ ┌─────────────────────┐ │               ▼
                     │ │   Assetfinder       │ │     ┌─────────────────────┐
                     │ │   • API Sources     │ │     │   Deduplicated      │
-                    │ │   • Search Engines  │ │────▶│   Subdomain List    │
+                    │ │   • Search Engines  │ │───▶│   Subdomain List    │
                     │ └─────────────────────┘ │     │                     │
                     │                         │     │ • sorted-subs.txt   │
                     │ ┌─────────────────────┐ │     │ • 1000+ subdomains  │
@@ -243,30 +325,30 @@ chmod +x playbook/install-script.sh
 │                        AUTOMATED INSTALLATION SYSTEM                            │
 └─────────────────────────────────────────────────────────────────────────────────┘
 
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│    System       │    │   Language      │    │     Tool        │
-│   Detection     │    │   Runtimes      │    │  Installation   │
-│                 │    │                 │    │                 │
-│ • OS Type       │    │ • Go Lang       │    │ • GitHub Repos  │
+┌─────────────────┐    ┌─────────────────┐    ┌───────────────────┐
+│    System       │    │   Language      │    │     Tool          │
+│   Detection     │    │   Runtimes      │    │  Installation     │
+│                 │    │                 │    │                   │
+│ • OS Type       │    │ • Go Lang       │    │ •  GitHub Repos   │
 │ • Architecture  │────│ • Python 3      │────│ • Binary Downloads│
-│ • Package Mgr   │    │ • Node.js       │    │ • Compilation   │
-│ • Permissions   │    │ • Dependencies  │    │ • Path Setup    │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
+│ • Package Mgr   │    │ • Node.js       │    │ • Compilation     │
+│ • Permissions   │    │ • Dependencies  │    │ • Path Setup      │
+└─────────────────┘    └─────────────────┘    └───────────────────┘
          │                       │                       │
          └───────────────────────┼───────────────────────┘
                                  │
-         ┌───────────────────────▼───────────────────────┐
-         │              VERIFICATION SYSTEM              │
-         │                                               │
-         │  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
-         │  │Tool Version │ │ Dependency  │ │ Integration │
-         │  │  Checking   │ │  Validation │ │   Testing   │
-         │  │             │ │             │ │             │
-         │  │ • Command   │ │ • Libraries │ │ • Tool      │
-         │  │   Available │ │ • Paths     │ │   Execution │
-         │  │ • Version   │ │ • Resolvers │ │ • Output    │
-         │  │   Compare   │ │ • Wordlists │ │   Parsing   │
-         │  └─────────────┘ └─────────────┘ └─────────────┘
+         ┌───────────────────────▼───────────────────────────┐
+         │              VERIFICATION SYSTEM                  │
+         │                                                   │
+         │  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐  │
+         │  │Tool Version │ │ Dependency  │ │ Integration │  │
+         │  │  Checking   │ │  Validation │ │   Testing   │  │
+         │  │             │ │             │ │             │  │
+         │  │ • Command   │ │ • Libraries │ │ • Tool      │  │
+         │  │   Available │ │ • Paths     │ │   Execution │  │
+         │  │ • Version   │ │ • Resolvers │ │ • Output    │  │
+         │  │   Compare   │ │ • Wordlists │ │   Parsing   │  │
+         │  └─────────────┘ └─────────────┘ └─────────────┘  │
          └───────────────────────────────────────────────────┘
 ```
 
